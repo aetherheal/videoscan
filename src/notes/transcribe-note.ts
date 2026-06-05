@@ -30,38 +30,42 @@ function shootDateFrom(name: string): string | null {
   return m ? `${m[1]}-${m[2]}-${m[3]}` : null;
 }
 
-function composeNote(
-  filename: string,
-  durationSec: number,
-  language: string,
-  summary: string,
-  englishTranscript: string,
-  originalTranscript: string,
-): string {
-  const date = shootDateFrom(filename);
-  const mins = Math.floor(durationSec / 60);
-  const secs = Math.round(durationSec % 60);
+interface ComposeFields {
+  filename: string;
+  durationSec: number;
+  language: string;
+  summaryEn: string;
+  summaryKo: string;
+  transcriptEn: string;
+  transcriptKo: string;
+  hasSpeech: boolean;
+}
+
+function composeNote(f: ComposeFields): string {
+  const date = shootDateFrom(f.filename);
+  const mins = Math.floor(f.durationSec / 60);
+  const secs = Math.round(f.durationSec % 60);
   const header = [
-    filename,
+    f.filename,
     [
       date ? `Shoot date: ${date}` : null,
       `Length: ${mins}m ${secs}s`,
-      `Source language: ${language}`,
+      `Source language: ${f.language}`,
     ]
       .filter(Boolean)
       .join("  |  "),
   ].join("\n");
 
-  const hasSpeech = originalTranscript.trim().length > 0;
   const sep = "=".repeat(60);
+  const en = f.hasSpeech ? f.transcriptEn.trim() : "(no speech)";
+  const ko = f.hasSpeech ? f.transcriptKo.trim() : "(음성 없음)";
 
   return (
     `${header}\n${sep}\n\n` +
-    `[SUMMARY]\n${summary}\n\n` +
-    `${sep}\n[TRANSCRIPT — ENGLISH]\n` +
-    `${hasSpeech ? englishTranscript.trim() : "(no speech)"}\n\n` +
-    `${sep}\n[TRANSCRIPT — ORIGINAL (${language})]\n` +
-    `${hasSpeech ? originalTranscript.trim() : "(no speech)"}\n`
+    `[SUMMARY — EN]\n${f.summaryEn}\n\n` +
+    `[SUMMARY — 한국어]\n${f.summaryKo}\n\n` +
+    `${sep}\n[TRANSCRIPT — ENGLISH]\n${en}\n\n` +
+    `${sep}\n[TRANSCRIPT — 한국어]\n${ko}\n`
   );
 }
 
@@ -109,19 +113,24 @@ export async function buildNote(
   }
 
   const text = fullTranscriptText(transcript);
-  const { summary, englishTranscript } = await summarizeTranscript(
-    { filename, durationSec: duration, language: transcript.language },
-    text,
-  );
+  const lang = transcript.language;
+  const c = await summarizeTranscript({ filename, durationSec: duration, language: lang }, text);
 
-  const note = composeNote(
+  // Pin the source-language transcript to the verbatim ASR text (ground truth);
+  // the other language stays the model translation.
+  const transcriptEn = lang.startsWith("en") && text ? text : c.transcriptEn;
+  const transcriptKo = lang.startsWith("ko") && text ? text : c.transcriptKo;
+
+  const note = composeNote({
     filename,
-    duration,
-    transcript.language,
-    summary,
-    englishTranscript,
-    text,
-  );
+    durationSec: duration,
+    language: lang,
+    summaryEn: c.summaryEn,
+    summaryKo: c.summaryKo,
+    transcriptEn,
+    transcriptKo,
+    hasSpeech: text.length > 0,
+  });
   const txtPath = join(dirname(videoPath), `${basename(videoPath, extname(videoPath))}.txt`);
   writeFileSync(txtPath, note, "utf8");
 
