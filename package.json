@@ -1,0 +1,28 @@
+{
+  "name": "videoscan-ai",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Chamakase viral-shorts pipeline — ASR → editorial judgment (Claude) → ffmpeg render for Apgujeong Tune Clinic.",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "scan": "tsx src/pipeline/run.ts",
+    "scan:dry": "tsx src/pipeline/run.ts --dry-run",
+    "index": "tsx src/index/build-index.ts",
+    "asr": "tsx src/layers/layer3-asr.ts",
+    "judge": "tsx src/layers/layer4-judge.ts",
+    "render": "tsx src/layers/layer5-render.ts"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.100.1",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0"
+  }
+}

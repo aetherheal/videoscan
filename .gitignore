@@ -1,0 +1,21 @@
+# Dependencies
+node_modules/
+dist/
+
+# Env / secrets
+.env*
+!.env.example
+
+# Python
+python/.venv/
+__pycache__/
+*.pyc
+
+# Pipeline I/O (large media + generated artifacts)
+inputs/*
+outputs/*
+!inputs/.gitkeep
+!outputs/.gitkeep
+
+# OS
+.DS_Store
