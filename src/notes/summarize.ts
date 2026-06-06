@@ -65,6 +65,24 @@ export async function summarizeTranscript(
     max_tokens: 8000,
     thinking: { type: "adaptive" },
     system: SYSTEM,
+    // Structured output guarantees valid JSON (the model otherwise emits raw
+    // newlines inside the multi-line summary strings, which breaks JSON.parse).
+    output_config: {
+      format: {
+        type: "json_schema",
+        schema: {
+          type: "object",
+          properties: {
+            summary_en: { type: "string" },
+            summary_ko: { type: "string" },
+            transcript_en: { type: "string" },
+            transcript_ko: { type: "string" },
+          },
+          required: ["summary_en", "summary_ko", "transcript_en", "transcript_ko"],
+          additionalProperties: false,
+        },
+      },
+    },
     messages: [
       {
         role: "user",
