@@ -60,38 +60,43 @@ export async function summarizeTranscript(
   const { anthropicApiKey, model } = env();
   const client = new Anthropic({ apiKey: anthropicApiKey });
 
-  const response = await client.messages.create({
-    model,
-    max_tokens: 8000,
-    thinking: { type: "adaptive" },
-    system: SYSTEM,
-    // Structured output guarantees valid JSON (the model otherwise emits raw
-    // newlines inside the multi-line summary strings, which breaks JSON.parse).
-    output_config: {
-      format: {
-        type: "json_schema",
-        schema: {
-          type: "object",
-          properties: {
-            summary_en: { type: "string" },
-            summary_ko: { type: "string" },
-            transcript_en: { type: "string" },
-            transcript_ko: { type: "string" },
+  // Streamed: a long video's full transcript translated into BOTH languages can
+  // take >10 min to generate, and the SDK rejects non-streaming requests that
+  // long. 32k max_tokens also gives headroom so the JSON isn't truncated.
+  const response = await client.messages
+    .stream({
+      model,
+      max_tokens: 32000,
+      thinking: { type: "adaptive" },
+      system: SYSTEM,
+      // Structured output guarantees valid JSON (the model otherwise emits raw
+      // newlines inside the multi-line summary strings, which breaks JSON.parse).
+      output_config: {
+        format: {
+          type: "json_schema",
+          schema: {
+            type: "object",
+            properties: {
+              summary_en: { type: "string" },
+              summary_ko: { type: "string" },
+              transcript_en: { type: "string" },
+              transcript_ko: { type: "string" },
+            },
+            required: ["summary_en", "summary_ko", "transcript_en", "transcript_ko"],
+            additionalProperties: false,
           },
-          required: ["summary_en", "summary_ko", "transcript_en", "transcript_ko"],
-          additionalProperties: false,
         },
       },
-    },
-    messages: [
-      {
-        role: "user",
-        content:
-          `File: ${meta.filename}\nLength: ${meta.durationSec.toFixed(0)}s\n` +
-          `Detected language: ${meta.language}\n\nTranscript (verbatim):\n${transcript}`,
-      },
-    ],
-  });
+      messages: [
+        {
+          role: "user",
+          content:
+            `File: ${meta.filename}\nLength: ${meta.durationSec.toFixed(0)}s\n` +
+            `Detected language: ${meta.language}\n\nTranscript (verbatim):\n${transcript}`,
+        },
+      ],
+    })
+    .finalMessage();
 
   const text = response.content
     .filter((b): b is Anthropic.TextBlock => b.type === "text")

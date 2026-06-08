@@ -8,6 +8,7 @@ import { summarizeTranscript } from "./summarize.js";
 import { extractAudio } from "./audio.js";
 import { fileSizeGb, freeGbLocal } from "./disk.js";
 import { logger } from "../utils/logger.js";
+import type { WhisperTranscript } from "../types.js";
 
 export interface NoteOptions {
   // Disk-safe: gate on free space, transcribe from a small extracted-audio temp,
@@ -27,6 +28,10 @@ export interface NoteResult {
   hasSpeech: boolean;
   chars: number;
   durationSec: number;
+  // The raw ASR result, returned so a caller can judge it (Layer 4) without
+  // paying for a second transcription pass. Its source_file may point at the
+  // extracted-audio temp (disk-safe mode), so override it before judging.
+  transcript: WhisperTranscript;
 }
 
 export class InsufficientDiskError extends Error {}
@@ -205,6 +210,7 @@ export async function buildNote(
     hasSpeech: text.length > 0,
     chars: text.length,
     durationSec: duration,
+    transcript,
   };
 }
 

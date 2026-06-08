@@ -49,8 +49,24 @@ def main() -> int:
         )
         return 1
 
-    eprint(f"[asr] loading model={args.model} device={args.device}")
-    model = WhisperModel(args.model, device=args.device, compute_type=args.compute_type)
+    # Resolve device/compute-type. "default" compute on CPU lands on float32
+    # (slow), so pick int8 for CPU (2-4x faster, negligible accuracy loss) and
+    # float16 for CUDA. Honour an explicit --compute-type/--device if given.
+    device = args.device
+    if device == "auto":
+        try:
+            import ctranslate2
+
+            device = "cuda" if ctranslate2.get_cuda_device_count() > 0 else "cpu"
+        except Exception:
+            device = "cpu"
+
+    compute_type = args.compute_type
+    if compute_type == "default":
+        compute_type = "float16" if device == "cuda" else "int8"
+
+    eprint(f"[asr] loading model={args.model} device={device} compute_type={compute_type}")
+    model = WhisperModel(args.model, device=device, compute_type=compute_type)
 
     use_vad = not args.no_vad
     eprint(f"[asr] transcribing {args.input} (vad={'on' if use_vad else 'off'})")

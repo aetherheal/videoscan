@@ -22,7 +22,7 @@ export interface FolderOptions {
 }
 
 // Recursively list video files under root, skipping excluded directory names.
-function walkVideos(root: string, excludeDirs: Set<string>): string[] {
+export function walkVideos(root: string, excludeDirs: Set<string>): string[] {
   const out: string[] = [];
   for (const entry of readdirSync(root, { withFileTypes: true })) {
     const full = join(root, entry.name);
