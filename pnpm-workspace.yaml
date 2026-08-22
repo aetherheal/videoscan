@@ -1,0 +1,5 @@
+# esbuild ships a prebuilt binary; its install script only re-verifies it.
+# Approving it here means a fresh clone works without the machine-global
+# `pnpm config set verify-deps-before-run false` workaround (pnpm v11+).
+allowBuilds:
+  esbuild: true

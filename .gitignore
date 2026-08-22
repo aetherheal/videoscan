@@ -17,5 +17,9 @@ outputs/*
 !inputs/.gitkeep
 !outputs/.gitkeep
 
+# Local ops scratch (robocopy run logs / completion markers)
+sd_copy_*.log
+sd_copy_DONE.txt
+
 # OS
 .DS_Store
