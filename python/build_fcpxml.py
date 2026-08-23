@@ -46,7 +46,7 @@ def rate_xml(tb, ntsc):
 
 
 def build(editlist):
-    name = editlist.get("name", "Videoscan Cut")
+    name = editlist.get("name", "Video Scan Cut")
     segs = []
     seq_tb = seq_ntsc = seq_w = seq_h = None
     file_ids = {}  # path -> file id (reuse)

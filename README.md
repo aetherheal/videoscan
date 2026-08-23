@@ -1,4 +1,4 @@
-# Videoscan AI
+# Video Scan
 
 Automated **viral-shorts pipeline** for 압구정튠의원 (Apgujeong Tune Clinic),
 operating under the **Chamakase (차마카세)** identity. It scans a long-form source

@@ -1,5 +1,5 @@
 {
-  "name": "videoscan-ai",
+  "name": "videoscan",
   "version": "0.1.0",
   "private": true,
   "description": "Chamakase viral-shorts pipeline — ASR → editorial judgment (Claude) → ffmpeg render for Apgujeong Tune Clinic.",
