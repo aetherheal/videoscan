@@ -40,9 +40,10 @@ export async function judgeTranscript(
       model,
       // Long, dense transcripts made *adaptive* thinking spiral — it spent the
       // entire budget thinking and returned no text (stop_reason=max_tokens).
-      // Cap thinking so the model must commit, leaving ample room for the clips.
-      max_tokens: 32000,
-      thinking: { type: "enabled", budget_tokens: 8000 },
+      // Medium effort keeps that behavior bounded while preserving judgment quality.
+      max_tokens: 42000,
+      thinking: { type: "adaptive" },
+      output_config: { effort: "medium" },
       system: [
         {
           type: "text",

@@ -6,6 +6,7 @@ import { resolve } from "node:path";
 export interface Env {
   anthropicApiKey: string;
   model: string;
+  catalogModel: string;
   whisperModel: string;
   python: string;
 }
@@ -25,7 +26,9 @@ export function env(): Env {
   }
   return {
     anthropicApiKey,
-    model: process.env.VIDEOSCAN_MODEL ?? "claude-opus-4-8",
+    model: process.env.VIDEOSCAN_MODEL ?? "claude-opus-5",
+    catalogModel:
+      process.env.VIDEOSCAN_CATALOG_MODEL ?? "claude-sonnet-5",
     whisperModel: process.env.VIDEOSCAN_WHISPER_MODEL ?? "large-v3",
     python: resolvePython(),
   };

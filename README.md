@@ -107,7 +107,8 @@ auto-rendered — they are routed to the human queue (logged, left in the manife
 | Env var | Default | Purpose |
 |---|---|---|
 | `ANTHROPIC_API_KEY` | — | Layer 4 Claude access (required) |
-| `VIDEOSCAN_MODEL` | `claude-opus-4-8` | Layer 4 model. Set `claude-haiku-4-5` for the cost-optimized cron path. |
+| `VIDEOSCAN_MODEL` | `claude-opus-5` | Layer 4 judge model. Set `claude-haiku-4-5` for the cost-optimized cron path. |
+| `VIDEOSCAN_CATALOG_MODEL` | `claude-sonnet-5` | High-volume footage catalog model. |
 | `VIDEOSCAN_WHISPER_MODEL` | `large-v3` | Layer 3 ASR model |
 | `VIDEOSCAN_PYTHON` | venv or `python3` | Interpreter with `faster-whisper` |
 
