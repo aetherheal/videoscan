@@ -13,6 +13,7 @@
     "scan:dry": "tsx src/pipeline/run.ts --dry-run",
     "scan:folder": "tsx src/notes/scan-folder.ts",
     "index": "tsx src/index/build-index.ts",
+    "index:folder": "tsx src/index/index-folder.ts",
     "note": "tsx src/notes/transcribe-note.ts",
     "note:folder": "tsx src/notes/transcribe-folder.ts",
     "asr": "tsx src/layers/layer3-asr.ts",
