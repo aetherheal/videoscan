@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { pathToFileURL } from "node:url";
 import { judgeTranscript } from "../claude/client.js";
 import { logger } from "../utils/logger.js";
 import type { WhisperTranscript } from "../types.js";
@@ -8,7 +9,7 @@ import type { WhisperTranscript } from "../types.js";
 // transcript JSON file can be judged on its own:  pnpm judge <transcript.json>
 export { judgeTranscript } from "../claude/client.js";
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const path = process.argv[2];
   if (!path) {
     logger.error("usage: tsx src/layers/layer4-judge.ts <transcript.json>");

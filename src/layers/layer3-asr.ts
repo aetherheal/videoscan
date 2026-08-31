@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { basename, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { asrEnv } from "../config/env.js";
 import { logger } from "../utils/logger.js";
 import type { WhisperTranscript } from "../types.js";
@@ -41,7 +42,7 @@ export function transcribe(videoPath: string): Promise<WhisperTranscript> {
 }
 
 // Allow `pnpm asr <video>` for quick standalone transcription.
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const input = process.argv[2];
   if (!input) {
     logger.error("usage: tsx src/layers/layer3-asr.ts <video-file>");
