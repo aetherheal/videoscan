@@ -15,6 +15,7 @@ interface SearchOptions {
   minDuration?: number;
   contentType?: ContentType;
   limit?: number;
+  maxPerClip?: number;
 }
 
 interface CliOptions extends SearchOptions {
@@ -32,6 +33,7 @@ interface SearchMatch {
 
 export interface SearchResult {
   id: string;
+  index_file: string;
   source_file: string;
   source_path: string | null;
   content_type: ContentType;
@@ -73,17 +75,22 @@ const FIELD_SPECS = [
   { name: "people", label: "people", weight: 2 },
 ] as const;
 
+// A scene whose only evidence is its parent clip's summary is weak evidence —
+// every sibling scene carries the identical text. Kept findable, not dominant.
+const SUMMARY_ONLY_PENALTY = 0.25;
+
+// Even with the penalty, one long clip can crowd the list with near-identical
+// scenes. An editor wants options across the library, not 10 rows of one video.
+const DEFAULT_MAX_PER_CLIP = 2;
+
 const STOP_WORDS = new Set([
   "a",
   "about",
   "an",
   "are",
-  "clip",
-  "clips",
   "do",
   "does",
   "find",
-  "footage",
   "for",
   "from",
   "i",
@@ -91,13 +98,9 @@ const STOP_WORDS = new Set([
   "me",
   "need",
   "of",
-  "scene",
-  "scenes",
   "sec",
   "second",
   "seconds",
-  "shot",
-  "shots",
   "show",
   "the",
   "to",
@@ -125,6 +128,13 @@ const SYNONYM_GROUPS = [
 function normalize(text: string): string {
   return text
     .normalize("NFKC")
+    // Fold diacritics so "façade" and "facade" are the same key. NFKC alone
+    // preserves ç, which left the accented synonym entry unreachable.
+    // Re-compose with NFC afterwards: NFD splits Hangul syllables into jamo,
+    // which would change what a "character" means to the Korean bigram matcher.
+    .normalize("NFD")
+    .replace(/\p{Diacritic}/gu, "")
+    .normalize("NFC")
     .toLocaleLowerCase("en-US")
     .replace(/[_-]+/gu, " ")
     .replace(/[^\p{L}\p{N}]+/gu, " ")
@@ -146,10 +156,20 @@ function englishStem(word: string): string {
   return word;
 }
 
-const synonymMap = new Map<string, string[]>();
+// Accumulate across groups rather than overwriting: "facade" belongs to both the
+// exterior and building groups, and a plain .set() silently dropped the first.
+const synonymMap = new Map<string, Set<string>>();
 for (const group of SYNONYM_GROUPS) {
-  for (const entry of group) {
-    synonymMap.set(normalize(entry), group.map(normalize).filter((item) => item !== normalize(entry)));
+  const normalizedGroup = group.map(normalize);
+  for (const entry of normalizedGroup) {
+    let aliases = synonymMap.get(entry);
+    if (!aliases) {
+      aliases = new Set<string>();
+      synonymMap.set(entry, aliases);
+    }
+    for (const alias of normalizedGroup) {
+      if (alias !== entry) aliases.add(alias);
+    }
   }
 }
 
@@ -206,7 +226,7 @@ function directMatchQuality(term: string, field: PreparedField): number {
 function matchTerm(term: string, field: PreparedField): { quality: number; matchedAs: string } {
   let quality = directMatchQuality(term, field);
   let matchedAs = term;
-  for (const alias of synonymMap.get(term) ?? []) {
+  for (const alias of synonymMap.get(term) ?? new Set<string>()) {
     const aliasQuality = directMatchQuality(alias, field) * 0.78;
     if (aliasQuality > quality) {
       quality = aliasQuality;
@@ -248,6 +268,14 @@ function scoreScene(scene: FootageCatalogScene, query: string): SearchResult | n
   let score = matches.reduce((sum, match) => sum + match.contribution, 0);
   score *= 0.6 + coverage * 0.4;
   score += coverage * coverage * terms.length * 2;
+
+  // The clip summary is inherited identically by every scene of that clip, so a
+  // summary-only match gives all of them the same score and one clip can fill
+  // the entire result list. Discount matches with no scene-level evidence: the
+  // clip stays findable, but it cannot outrank scenes that actually match.
+  const summaryLabel = FIELD_SPECS.find((spec) => spec.name === "summary")?.label;
+  const isSummaryOnly = matches.every((match) => match.field === summaryLabel);
+  if (isSummaryOnly) score *= SUMMARY_ONLY_PENALTY;
 
   const phrase = terms.join(" ");
   if (terms.length > 1) {
@@ -295,6 +323,7 @@ function scoreScene(scene: FootageCatalogScene, query: string): SearchResult | n
   return {
     id: scene.id,
     source_file: scene.source_file,
+    index_file: scene.index_file,
     source_path: scene.source_path,
     content_type: scene.content_type,
     has_speech: scene.has_speech,
@@ -317,7 +346,9 @@ function scoreScene(scene: FootageCatalogScene, query: string): SearchResult | n
 
 function passesFilters(scene: FootageCatalogScene, options: SearchOptions): boolean {
   if (options.bRoll !== undefined && scene.is_b_roll !== options.bRoll) return false;
-  if (options.hasSpeech === true && !scene.has_speech) return false;
+  // scene.has_speech is inherited from the clip, so a silent b-roll scene inside
+  // a talking clip would pass. Require speech in *this* scene.
+  if (options.hasSpeech === true && !scene.spoken_excerpt) return false;
   if (options.minDuration !== undefined && scene.duration < options.minDuration) return false;
   if (options.contentType !== undefined && scene.content_type !== options.contentType) return false;
   return true;
@@ -329,12 +360,29 @@ export function searchCatalog(query: string, options: SearchOptions = {}): Searc
   const catalog = footageCatalogSchema.parse(raw);
   const limit = options.limit ?? 10;
 
-  return catalog.scenes
+  const ranked = catalog.scenes
     .filter((scene) => passesFilters(scene, options))
     .map((scene) => scoreScene(scene, query))
     .filter((result): result is SearchResult => result !== null)
-    .sort((a, b) => b.score - a.score || b.duration - a.duration || a.id.localeCompare(b.id))
-    .slice(0, limit);
+    // Tie-break toward the SHORTER scene: at equal relevance a tight 8s shot is
+    // more usable as a cutaway than a 300s catch-all covering the same ground.
+    .sort((a, b) => b.score - a.score || a.duration - b.duration || a.id.localeCompare(b.id));
+
+  // Diversify: keep at most N scenes per source clip so one long video cannot
+  // fill the list with near-identical rows. Pass --max-per-clip 0 to disable.
+  const maxPerClip = options.maxPerClip ?? DEFAULT_MAX_PER_CLIP;
+  if (maxPerClip <= 0) return ranked.slice(0, limit);
+
+  const perClip = new Map<string, number>();
+  const diversified: SearchResult[] = [];
+  for (const result of ranked) {
+    if (diversified.length >= limit) break;
+    const seen = perClip.get(result.index_file) ?? 0;
+    if (seen >= maxPerClip) continue;
+    perClip.set(result.index_file, seen + 1);
+    diversified.push(result);
+  }
+  return diversified;
 }
 
 function requiredValue(argv: string[], index: number, flag: string): string {
@@ -362,12 +410,16 @@ function parseCli(argv: string[]): CliOptions {
     else if (arg === "--has-speech") options.hasSpeech = true;
     else if (arg === "--json") options.json = true;
     else if (arg === "--help" || arg === "-h") options.help = true;
-    else if (["--catalog", "--min-duration", "--content-type", "--limit"].includes(arg)) {
+    else if (
+      ["--catalog", "--min-duration", "--content-type", "--limit", "--max-per-clip"].includes(arg)
+    ) {
       const value = requiredValue(argv, i, arg);
       i++;
       if (arg === "--catalog") options.catalog = value;
       else if (arg === "--min-duration") options.minDuration = finiteNumber(value, arg);
-      else if (arg === "--limit") {
+      else if (arg === "--max-per-clip") {
+        options.maxPerClip = finiteNumber(value, arg, true);
+      } else if (arg === "--limit") {
         const limit = finiteNumber(value, arg, true);
         if (limit < 1) throw new Error("--limit must be at least 1");
         options.limit = limit;

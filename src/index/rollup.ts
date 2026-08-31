@@ -1,3 +1,4 @@
+import type { Dirent } from "node:fs";
 import {
   existsSync,
   mkdirSync,
@@ -62,6 +63,8 @@ export type FootageCatalog = z.infer<typeof footageCatalogSchema>;
 export interface RollupOptions {
   root?: string;
   out?: string;
+  /** Folders holding the actual footage, searched to resolve each index's basename. */
+  sourceRoots?: string[];
 }
 
 export interface RollupResult {
@@ -95,7 +98,12 @@ function isFile(path: string): boolean {
 // buildIndex currently stores a basename. Resolve it only when a real file at a
 // conventional location makes the relationship unambiguous; never invent an
 // absolute path that merely looks plausible.
-function resolveSourcePath(indexPath: string, root: string, sourceFile: string): string | null {
+function resolveSourcePath(
+  indexPath: string,
+  root: string,
+  sourceFile: string,
+  sourceRoots: string[],
+): string | null {
   if (isAbsolute(sourceFile)) return resolve(sourceFile);
 
   const candidates = [
@@ -105,7 +113,49 @@ function resolveSourcePath(indexPath: string, root: string, sourceFile: string):
     resolve(process.cwd(), "inputs", sourceFile),
     resolve(dirname(root), "inputs", sourceFile),
   ];
-  return candidates.find(isFile) ?? null;
+  const direct = candidates.find(isFile);
+  if (direct) return direct;
+
+  // The footage itself lives outside the repo (e.g. F:\Tune Clinic Recordings),
+  // in dated subfolders, and buildIndex only stores a basename — so none of the
+  // conventional locations above match for the real library. Search the shoot
+  // roots the caller named. Without this every result prints a bare filename an
+  // editor cannot open.
+  for (const sourceRoot of sourceRoots) {
+    const found = findFileByName(sourceRoot, sourceFile);
+    if (found) return found;
+  }
+  return null;
+}
+
+// Depth-first search for a basename under a root, memoised per root so a
+// 700-clip rollup walks each shoot folder once rather than once per clip.
+const sourceRootIndexCache = new Map<string, Map<string, string>>();
+
+function findFileByName(sourceRoot: string, fileName: string): string | null {
+  const resolvedRoot = resolve(sourceRoot);
+  let index = sourceRootIndexCache.get(resolvedRoot);
+  if (!index) {
+    index = new Map<string, string>();
+    const walk = (dir: string): void => {
+      let entries: Dirent[];
+      try {
+        entries = readdirSync(dir, { withFileTypes: true });
+      } catch {
+        return; // unreadable subtree: skip, don't fail the whole rollup
+      }
+      for (const entry of entries) {
+        const full = join(dir, entry.name);
+        if (entry.isDirectory()) walk(full);
+        else if (!index!.has(entry.name.toLowerCase())) {
+          index!.set(entry.name.toLowerCase(), full);
+        }
+      }
+    };
+    walk(resolvedRoot);
+    sourceRootIndexCache.set(resolvedRoot, index);
+  }
+  return index.get(fileName.toLowerCase()) ?? null;
 }
 
 function portableRelativePath(from: string, to: string): string {
@@ -115,6 +165,7 @@ function portableRelativePath(from: string, to: string): string {
 export function rollupFootageIndexes(opts: RollupOptions = {}): RollupResult {
   const root = resolve(opts.root ?? join(process.cwd(), "outputs"));
   const outPath = resolve(opts.out ?? join(root, CATALOG_FILENAME));
+  const sourceRoots = (opts.sourceRoots ?? []).map((dir) => resolve(dir));
   if (!existsSync(root) || !statSync(root).isDirectory()) {
     throw new Error(`rollup root is not a directory: ${root}`);
   }
@@ -128,7 +179,7 @@ export function rollupFootageIndexes(opts: RollupOptions = {}): RollupResult {
     try {
       const raw: unknown = JSON.parse(readFileSync(indexPath, "utf8"));
       const clip = footageIndexSchema.parse(raw);
-      const sourcePath = resolveSourcePath(indexPath, root, clip.source_file);
+      const sourcePath = resolveSourcePath(indexPath, root, clip.source_file, sourceRoots);
 
       clip.scenes.forEach((scene, scenePosition) => {
         scenes.push({
@@ -195,11 +246,15 @@ function parseCli(argv: string[]): CliOptions {
     const arg = argv[i];
     if (arg === "--help" || arg === "-h") {
       options.help = true;
-    } else if (arg === "--root" || arg === "--out") {
+    } else if (arg === "--root" || arg === "--out" || arg === "--source-root") {
       const value = argv[++i];
       if (!value) throw new Error(`${arg} requires a path`);
       if (arg === "--root") options.root = value;
-      else options.out = value;
+      else if (arg === "--source-root") {
+        // Repeatable: the footage lives outside the repo and an index stores
+        // only a basename, so results are unopenable without this.
+        options.sourceRoots = [...(options.sourceRoots ?? []), value];
+      } else options.out = value;
     } else {
       throw new Error(`unknown argument: ${arg}`);
     }
@@ -208,7 +263,8 @@ function parseCli(argv: string[]): CliOptions {
 }
 
 function usage(): string {
-  return "usage: pnpm index:rollup [--root <dir>] [--out <file>]";
+  return "usage: pnpm index:rollup [--root <dir>] [--out <file>] "
+    + "[--source-root <footage-dir>]...";
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
