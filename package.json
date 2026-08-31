@@ -12,6 +12,7 @@
     "scan": "tsx src/pipeline/run.ts",
     "scan:dry": "tsx src/pipeline/run.ts --dry-run",
     "scan:folder": "tsx src/notes/scan-folder.ts",
+    "junk:scan": "tsx src/index/junk-detect.ts",
     "index": "tsx src/index/build-index.ts",
     "index:folder": "tsx src/index/index-folder.ts",
     "note": "tsx src/notes/transcribe-note.ts",
