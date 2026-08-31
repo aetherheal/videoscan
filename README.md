@@ -113,7 +113,7 @@ auto-rendered — they are routed to the human queue (logged, left in the manife
 | `VIDEOSCAN_MODEL` | `claude-opus-5` | Layer 4 judge + notes summarizer model. Set `claude-sonnet-5` for the cost-optimized cron path; pre-4.6 models reject adaptive thinking / `effort`. |
 | `VIDEOSCAN_CATALOG_MODEL` | `claude-sonnet-5` | High-volume footage catalog model. |
 | `VIDEOSCAN_CODEX_MODEL` | `gpt-5.6-sol` | Codex CLI model for every model call when `VIDEOSCAN_PROVIDER=codex`. |
-| `VIDEOSCAN_CODEX_TIMEOUT_MS` | `900000` | Codex CLI timeout per request (15 minutes by default; useful for vision over many keyframes). |
+| `VIDEOSCAN_CODEX_TIMEOUT_MS` | `900000` | Codex CLI timeout per request (15 minutes by default; useful for vision over many keyframes). On timeout the process tree is killed. Transient failures (capacity, rate limit, 5xx) are retried 3x with 30s/2m/5m backoff. Calls pin `model_reasoning_effort=medium` rather than inheriting `~/.codex/config.toml`. |
 | `VIDEOSCAN_WHISPER_MODEL` | `large-v3` | Layer 3 ASR model |
 | `VIDEOSCAN_PYTHON` | venv or `python3` | Interpreter with `faster-whisper` |
 
