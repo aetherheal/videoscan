@@ -21,28 +21,53 @@ const VERY_SHORT_SECONDS = 1;
 const SHORT_SECONDS = 3;
 const BRIEF_SECONDS = 6;
 const POSSIBLY_ACCIDENTAL_SECONDS = 10;
+// A fumbled start/stop can easily run 10-30s. 313 of the library's 697 clips are
+// 60s+, so a band this wide does not flood the review queue — but on its own it
+// is weak evidence, hence the low weight.
+const MAYBE_ACCIDENTAL_SECONDS = 30;
 
-// Absolute size is weak evidence because highly compressed and drone footage
-// vary enormously. These thresholds only corroborate other signals.
+// Absolute size is weak evidence: bitrates across this library vary enormously.
+// These thresholds only corroborate other signals.
 const TINY_FILE_BYTES = 5 * MIB;
 const SMALL_FILE_BYTES = 15 * MIB;
 
+// MEASURED over this library (sample of the shortest DJI Pocket clips):
+// bitrates run 22-40 Mbps, so a legitimate 10s clip is already ~45 MiB and a
+// legitimate 14s clip ~40-65 MiB. Anything keyed on "short but large" must sit
+// well above that or it flags every ordinary short cutaway. 120 MiB inside 30s
+// implies >33 Mbps sustained, i.e. genuinely disproportionate.
+//
+// Note on the 89.7 MB clip cited in docs/plan-footage-ops.md: at this library's
+// real bitrates that is a ~25-30s clip, not a "short but large" one. It is
+// covered by the MAYBE_ACCIDENTAL_SECONDS duration band, and — honestly —
+// cheap signals alone cannot confidently condemn a 25s clip. It needs a
+// footage index to be called with confidence, which is what the index signals
+// below are for.
+const LARGE_FOR_SHORT_BYTES = 120 * MIB;
+
 // Average bitrate catches files whose size and duration are out of proportion.
-// Below 0.25 Mbps is implausibly sparse for ordinary camera footage; above 350
-// Mbps is implausibly large for most delivery codecs. Both remain low-weight to
-// avoid treating legitimate proxies or high-bitrate drone masters as junk.
+// Below 0.25 Mbps is implausibly sparse for ordinary camera footage. The upper
+// gate is set comfortably above the 38 Mbps maximum measured across this
+// library, so legitimate footage is never penalized; the original 350 was above
+// anything this hardware can produce and never fired at all.
 const MIN_BITRATE_SAMPLE_SECONDS = 5;
 const VERY_LOW_BITRATE_MBPS = 0.25;
-const VERY_HIGH_BITRATE_MBPS = 350;
+const VERY_HIGH_BITRATE_MBPS = 70;
 
 // Six words or fewer is treated as a near-empty catalog description. It matters
-// only when every scene is also marked B-roll, so normal well-described drone
-// footage is not penalized merely for being B-roll.
+// only when every scene is also marked B-roll, so well-described B-roll is not
+// penalized merely for being B-roll.
 const NEAR_EMPTY_DESCRIPTION_WORDS = 6;
 
 // 40 requires one strong signal or several weak ones. Callers can widen or
 // narrow the human-review queue with --min-score; scores are capped at 100.
 const DEFAULT_MIN_SCORE = 40;
+
+// Duration alone must not push a clip over DEFAULT_MIN_SCORE: a deliberate 3s
+// cutaway is legitimate footage. Anything above the "camera tap" band therefore
+// needs a second, independent signal to reach the review queue. The <=1s band is
+// exempt because a sub-second clip is decisive on its own.
+const DURATION_ONLY_CAP = DEFAULT_MIN_SCORE - 5;
 
 const OUTTAKE_HINTS = [
   "accidental",
@@ -183,7 +208,19 @@ function scoreClip(
     reasons.push(`+${points}: ${reason}`);
   };
 
+  // Duration and raw file size are not independent: a short clip is small
+  // *because* it is short, so the two together are still only one piece of
+  // evidence. Track genuinely independent signals — an existing catalog verdict,
+  // a bitrate anomaly, or the short-and-large combination — separately, so a
+  // clip supported by nothing else can be capped below the review threshold.
+  let independentEvidence = 0;
+  const addIndependent = (points: number, reason: string) => {
+    independentEvidence += points;
+    add(points, reason);
+  };
+
   if (duration <= VERY_SHORT_SECONDS) {
+    // Decisive on its own; deliberately not counted toward the cap.
     add(60, `duration is only ${duration.toFixed(2)}s (typical accidental camera tap)`);
   } else if (duration <= SHORT_SECONDS) {
     add(45, `duration is only ${duration.toFixed(2)}s`);
@@ -191,6 +228,8 @@ function scoreClip(
     add(25, `duration is only ${duration.toFixed(2)}s`);
   } else if (duration <= POSSIBLY_ACCIDENTAL_SECONDS) {
     add(10, `duration is only ${duration.toFixed(2)}s`);
+  } else if (duration <= MAYBE_ACCIDENTAL_SECONDS) {
+    add(6, `duration is only ${duration.toFixed(2)}s`);
   }
 
   if (sizeBytes <= TINY_FILE_BYTES) {
@@ -199,29 +238,42 @@ function scoreClip(
     add(8, `file is only ${formatBytes(sizeBytes)}`);
   }
 
+  // Short *and* large: an accidental 4K recording is too big to look small and
+  // too long to look like a tap, so neither threshold above catches it. This is
+  // the 89.7 MB case from docs/plan-footage-ops.md.
+  if (duration <= MAYBE_ACCIDENTAL_SECONDS && sizeBytes >= LARGE_FOR_SHORT_BYTES) {
+    addIndependent(
+      22,
+      `only ${duration.toFixed(2)}s but ${formatBytes(sizeBytes)} — large for such a short clip`,
+    );
+  }
+
   const averageBitrateMbps = (sizeBytes * 8) / duration / 1_000_000;
   if (duration >= MIN_BITRATE_SAMPLE_SECONDS && averageBitrateMbps < VERY_LOW_BITRATE_MBPS) {
-    add(10, `average bitrate is unusually low (${averageBitrateMbps.toFixed(2)} Mbps)`);
+    addIndependent(10, `average bitrate is unusually low (${averageBitrateMbps.toFixed(2)} Mbps)`);
   } else if (averageBitrateMbps > VERY_HIGH_BITRATE_MBPS) {
-    add(8, `size is unusually large for its duration (${averageBitrateMbps.toFixed(1)} Mbps)`);
+    addIndependent(
+      8,
+      `size is unusually large for its duration (${averageBitrateMbps.toFixed(1)} Mbps)`,
+    );
   }
 
   const index = indexLookup.index;
   if (index) {
     if (index.content_type === "other") {
-      add(12, 'existing catalog classified content_type as "other"');
+      addIndependent(12, 'existing catalog classified content_type as "other"');
     }
 
     const labels = index.scenes.flatMap((scene) => [...scene.tags, ...scene.usable_for]);
     const matchedLabels = matchingOuttakeLabels(labels);
     if (matchedLabels.length > 0) {
       const points = 18 + Math.min((matchedLabels.length - 1) * 3, 7);
-      add(points, `catalog labels look outtake-like (${matchedLabels.slice(0, 4).join(", ")})`);
+      addIndependent(points, `catalog labels look outtake-like (${matchedLabels.slice(0, 4).join(", ")})`);
     }
 
     const summaryMatches = matchingOuttakeLabels([index.summary]);
     if (summaryMatches.length > 0) {
-      add(10, `catalog summary looks outtake-like (${summaryMatches[0]})`);
+      addIndependent(10, `catalog summary looks outtake-like (${summaryMatches[0]})`);
     }
 
     const everySceneIsThinBroll = index.scenes.length > 0
@@ -230,7 +282,7 @@ function scoreClip(
         (scene) => wordCount(scene.description) <= NEAR_EMPTY_DESCRIPTION_WORDS,
       );
     if (everySceneIsThinBroll) {
-      add(10, "every scene is B-roll with a near-empty description");
+      addIndependent(10, "every scene is B-roll with a near-empty description");
     }
   } else {
     const detail = indexLookup.detail ? ` (${indexLookup.detail})` : "";
@@ -241,13 +293,27 @@ function scoreClip(
 
   if (reasons.length === 0) reasons.push("No junk signals met the scoring thresholds.");
 
+  // A clip whose *only* evidence is "it's short" must not reach the review queue
+  // on that alone — a deliberate 3-second cutaway is legitimate footage. Once any
+  // other signal corroborates, the full score stands.
+  let finalScore = score;
+  const isDecisivelyShort = duration <= VERY_SHORT_SECONDS;
+  if (!isDecisivelyShort && independentEvidence === 0 && score > DURATION_ONLY_CAP) {
+    finalScore = DURATION_ONLY_CAP;
+    reasons.push(
+      `Capped at ${DURATION_ONLY_CAP}: duration and file size are the only signals, `
+        + "and those are not independent of each other. Needs corroboration "
+        + "(a footage index, a bitrate anomaly, or short-but-large) to reach the review queue.",
+    );
+  }
+
   return {
     path: resolve(videoPath),
     relative_path: relative(sourceRoot, videoPath),
     size_bytes: sizeBytes,
     duration_seconds: rounded(duration, 3),
     average_bitrate_mbps: rounded(averageBitrateMbps, 3),
-    score: Math.min(score, 100),
+    score: Math.min(finalScore, 100),
     reason: reasons.join(" "),
     index_status: indexLookup.status,
     index_path: indexLookup.path,
@@ -411,13 +477,14 @@ function printSummary(report: JunkScanReport, outPath: string): void {
 interface CliOptions {
   root: string;
   out: string;
+  outputsRoot?: string;
   minScore?: number;
   limit?: number;
 }
 
 function usage(): string {
   return "usage: pnpm junk:scan --root <folder> [--out <path.json>] "
-    + "[--limit <N>] [--min-score <0-100>]";
+    + "[--outputs <dir>] [--limit <N>] [--min-score <0-100>]";
 }
 
 function parseCli(argv: string[]): CliOptions {
@@ -445,6 +512,9 @@ function parseCli(argv: string[]): CliOptions {
   return {
     root,
     out,
+    // Without this, the index-based signals (the strongest ones) silently
+    // vanish whenever the tool is run from outside the repo root.
+    outputsRoot: value("--outputs"),
     limit: numeric("--limit"),
     minScore: numeric("--min-score"),
   };
@@ -460,6 +530,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       const report = scanJunkCandidates(cli.root, {
         limit: cli.limit,
         minScore: cli.minScore,
+        outputsRoot: cli.outputsRoot,
       });
       mkdirSync(dirname(outPath), { recursive: true });
       writeFileSync(outPath, `${JSON.stringify(report, null, 2)}\n`, "utf8");
