@@ -72,6 +72,9 @@ export async function summarizeTranscript(
       // Structured output guarantees valid JSON (the model otherwise emits raw
       // newlines inside the multi-line summary strings, which breaks JSON.parse).
       output_config: {
+        // Bounded like Layer 4 — unbounded adaptive thinking on a dense
+        // transcript can spend the whole budget and return no text.
+        effort: "medium",
         format: {
           type: "json_schema",
           schema: {

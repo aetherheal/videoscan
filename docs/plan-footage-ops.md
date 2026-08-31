@@ -48,7 +48,8 @@ directly, despite `.env.example` existing. On Windows configure via user env var
 
 ```
 ANTHROPIC_API_KEY=<key>
-VIDEOSCAN_MODEL=claude-sonnet-5          # see §3B before setting this
+VIDEOSCAN_MODEL=claude-opus-5            # Layer 4 judge + notes summarizer
+VIDEOSCAN_CATALOG_MODEL=claude-sonnet-5  # high-volume vision catalog
 VIDEOSCAN_PYTHON=<repo>\python\.venv\Scripts\python.exe
 VIDEOSCAN_WHISPER_MODEL=medium
 PYTHONUTF8=1
@@ -115,53 +116,47 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
 `pnpm scan` / `scan:dry` are unaffected (`src/pipeline/run.ts` has no guard), which
 is why they were the only things ever verified working on Windows.
 
-### B. Model migration → Sonnet 5
+### B. Model migration → Sonnet 5 / Opus 5 — **DONE 2026-08-31**
 
-Currently `VIDEOSCAN_MODEL=claude-sonnet-4-6` (previous-gen Sonnet); the code
-default at `src/config/env.ts:28` is `claude-opus-4-8`.
+Shipped. What landed, so you don't re-derive it:
 
-**Why Sonnet 5 specifically matters here:** it is the first Sonnet-tier model with
-high-resolution vision (2576 px long edge, vs 1568 px on Sonnet 4.6). The whole
-catalog layer is keyframe understanding, so that is the load-bearing difference.
-Sonnet 5 introductory pricing is $2/$10 per MTok vs the $3/$15 list rate —
-**introductory pricing ends 2026-08-31.**
+- **The model is now split per layer**, via two env vars:
 
-**Blocker — changing the env var alone will break Layer 4.**
-`src/claude/client.ts:45` sends:
+  | Layer | Env var | Default | Why |
+  |---|---|---|---|
+  | Layer 4 judge (`src/claude/client.ts`) + notes summarizer (`src/notes/summarize.ts`) | `VIDEOSCAN_MODEL` | `claude-opus-5` | CLAUDE.md calls this "the product"; 의료법 §56 compliance judgment rides on it. |
+  | Catalog (`src/index/`) | `VIDEOSCAN_CATALOG_MODEL` | `claude-sonnet-5` | High-volume vision tagging over hundreds of clips; recognition, not deep judgment. Opus is overkill and multiplies cost. |
 
-```ts
-thinking: { type: "enabled", budget_tokens: 8000 },
-```
+  Note `VIDEOSCAN_MODEL` drives the notes summarizer too, not just Layer 4.
 
-`budget_tokens` is *removed* on Sonnet 5 and returns HTTP 400. It still works on
-Sonnet 4.6 (deprecated), which is why nothing has failed yet. Replace with:
+- **`budget_tokens` is gone everywhere.** It is *removed* on 5-series models and
+  returns HTTP 400. All three call sites now send `thinking: { type: "adaptive" }`
+  with `output_config: { effort: "medium" }`. `effort` is the supported lever for
+  the old spiral problem (adaptive thinking burning the whole budget and returning
+  no text, `stop_reason=max_tokens`) — raise it only if output quality drops.
+  Every call site also has an empty-text guard that surfaces `stop_reason`.
 
-```ts
-thinking: { type: "adaptive" },
-output_config: { effort: "medium" },
-```
+- **Any override must be a 4.6-or-newer model.** Pre-4.6 models (e.g.
+  `claude-haiku-4-5`) reject both adaptive thinking and `effort`. The old docs
+  advertised haiku-4-5 as the cheap cron path; that advice is now wrong and has
+  been removed. Use `claude-sonnet-5` to run cheaper.
 
-Note the comment at `src/claude/client.ts:41-43`: adaptive thinking previously
-spiralled on long transcripts, burning the whole budget and returning no text
-(`stop_reason=max_tokens`), and `budget_tokens` was the workaround. **`effort` is
-the supported lever for exactly that problem** — start at `medium` and only raise
-it if clip quality drops.
+- **`max_tokens`** is 42000 (client.ts) / 10400 (catalog.ts) / 32000
+  (summarize.ts). These are ceilings, not spend.
 
-`src/index/catalog.ts:107` already uses `thinking: { type: "adaptive" }` with no
-`budget_tokens`, so the catalog layer needs no change.
+- **Keyframe resolution was the real lever, and it was the actual bottleneck.**
+  The original rationale for Sonnet 5 was its 2576 px vision (vs 1568 px on 4.6) —
+  but `src/index/keyframes.ts` was downscaling every keyframe to **768 px**, so
+  none of that resolution ever reached the model. Now a named
+  `KEYFRAME_LONG_EDGE = 1568` constant. Going to the full 2576 would roughly 11x
+  the token bill of the old 768 across a 650-clip library for detail that
+  scene-level recognition doesn't need; raise it only if the catalog must read
+  on-screen text.
 
-Also re-check `max_tokens` after switching: Sonnet 5 uses a new tokenizer that
-produces roughly 30% more tokens for the same text, so the `max_tokens: 32000` at
-`client.ts:44` and `max_tokens: 8000` at `catalog.ts:106` have less real headroom
-than they did on 4.6.
-
-**Suggested split** rather than one global model — the two layers have different
-shapes, so consider a second env var (e.g. `VIDEOSCAN_CATALOG_MODEL`):
-
-| Layer | Model | Why |
-|---|---|---|
-| Catalog (`src/index/`) | `claude-sonnet-5` | High-volume vision tagging over hundreds of clips; recognition, not deep judgment. Opus is overkill and multiplies cost. |
-| Layer 4 judge (`src/claude/client.ts`) | `claude-opus-5` | CLAUDE.md calls this "the product"; 의료법 §56 compliance judgment rides on it. |
+> **Env vars are not `.env`** — this repo reads `process.env` directly (§2). On
+> Windows you must `setx VIDEOSCAN_MODEL claude-opus-5` (and
+> `VIDEOSCAN_CATALOG_MODEL`) and open a new shell, or the migration is inert and
+> you silently keep running whatever the old user env var says.
 
 ### C. `backup.ps1` — generalize the SD-card copy
 

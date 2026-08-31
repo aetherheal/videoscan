@@ -62,7 +62,7 @@ export interface CatalogInput {
 }
 
 export async function catalogScenes(input: CatalogInput): Promise<CatalogResult> {
-  const { anthropicApiKey, model } = env();
+  const { anthropicApiKey, catalogModel } = env();
   const client = new Anthropic({ apiKey: anthropicApiKey });
 
   const header = {
@@ -102,9 +102,12 @@ export async function catalogScenes(input: CatalogInput): Promise<CatalogResult>
   }
 
   const response = await client.messages.create({
-    model,
-    max_tokens: 8000,
+    model: catalogModel,
+    max_tokens: 10400,
+    // Same guard as Layer 4: unbounded adaptive thinking can spend the whole
+    // budget and return no text. Medium effort keeps it bounded.
     thinking: { type: "adaptive" },
+    output_config: { effort: "medium" },
     system: SYSTEM,
     messages: [{ role: "user", content }],
   });
@@ -114,6 +117,14 @@ export async function catalogScenes(input: CatalogInput): Promise<CatalogResult>
     .map((b) => b.text)
     .join("");
 
+  if (!text.trim()) {
+    throw new Error(
+      `catalog returned no text (stop_reason=${response.stop_reason}, ` +
+        `blocks=[${response.content.map((b) => b.type).join(", ")}], ` +
+        `output_tokens=${response.usage.output_tokens})`,
+    );
+  }
+
   const raw: unknown = JSON.parse(extractJson(text));
   const result = catalogResultSchema.parse(raw);
 
@@ -121,7 +132,7 @@ export async function catalogScenes(input: CatalogInput): Promise<CatalogResult>
     source_file: basename(input.sourceFile),
     content_type: result.content_type,
     scenes: result.scenes.length,
-    model,
+    model: catalogModel,
     input_tokens: response.usage.input_tokens,
     output_tokens: response.usage.output_tokens,
   });
