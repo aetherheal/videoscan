@@ -35,7 +35,12 @@ video — are out of scope; drop files in `inputs/`.)
 ## Conventions
 
 - **TypeScript strict**, ESM. Always use `.js` extensions in relative imports.
-- **Claude calls**: use `@anthropic-ai/sdk`, models from `env()`, adaptive
+- **Provider selection**: `VIDEOSCAN_PROVIDER` defaults to `anthropic`; set it
+  to `codex` to invoke the locally authenticated Codex CLI (ChatGPT subscription,
+  no OpenAI API key). `VIDEOSCAN_CODEX_MODEL` defaults to `gpt-5.6-sol` and is
+  shared by the judge, catalog, and notes calls. Keep provider calls behind
+  `src/providers/`; call sites still perform their domain Zod validation.
+- **Anthropic provider calls**: use `@anthropic-ai/sdk`, models from `env()`, adaptive
   thinking bounded by `output_config: { effort: "medium" }`. Layer 4 (and the
   notes summarizer) default to `claude-opus-5` (override via `VIDEOSCAN_MODEL`;
   `claude-sonnet-5` is the cost-optimized cron option), while the catalog

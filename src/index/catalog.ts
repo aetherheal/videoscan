@@ -1,10 +1,9 @@
-import Anthropic from "@anthropic-ai/sdk";
-import { readFileSync } from "node:fs";
 import { basename } from "node:path";
-import { env } from "../config/env.js";
-import { logger } from "../utils/logger.js";
 import { extractJson } from "../claude/json.js";
 import { catalogResultSchema, type CatalogResult } from "../config/schema.js";
+import { providerFor } from "../providers/index.js";
+import type { JsonSchema } from "../providers/types.js";
+import { logger } from "../utils/logger.js";
 import type { Keyframe } from "./keyframes.js";
 
 const SYSTEM = `You are the footage-cataloging layer of a video pipeline for Tune Clinic
@@ -49,9 +48,54 @@ backticks — matching exactly:
 }
 Keep "index", "start", "end", and "spoken_excerpt" exactly as given in the input.`;
 
-function mediaTypeFor(path: string): "image/jpeg" | "image/png" {
-  return path.toLowerCase().endsWith(".png") ? "image/png" : "image/jpeg";
-}
+const catalogResultJsonSchema: JsonSchema = {
+  type: "object",
+  properties: {
+    summary: { type: "string" },
+    content_type: {
+      type: "string",
+      enum: ["vlog", "talking_head", "consultation", "procedure", "interview", "b_roll", "mixed", "other"],
+    },
+    scenes: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          index: { type: "integer", minimum: 0 },
+          start: { type: "number", minimum: 0 },
+          end: { type: "number", minimum: 0 },
+          shot_type: {
+            type: "string",
+            enum: ["aerial", "exterior", "interior", "talking_head", "procedure", "product", "b_roll", "other"],
+          },
+          setting: { type: "string" },
+          description: { type: "string" },
+          people: { type: "array", items: { type: "string" } },
+          is_b_roll: { type: "boolean" },
+          spoken_excerpt: { type: ["string", "null"] },
+          tags: { type: "array", items: { type: "string" } },
+          usable_for: { type: "array", items: { type: "string" } },
+        },
+        required: [
+          "index",
+          "start",
+          "end",
+          "shot_type",
+          "setting",
+          "description",
+          "people",
+          "is_b_roll",
+          "spoken_excerpt",
+          "tags",
+          "usable_for",
+        ],
+        additionalProperties: false,
+      },
+    },
+  },
+  required: ["summary", "content_type", "scenes"],
+  additionalProperties: false,
+};
 
 export interface CatalogInput {
   sourceFile: string;
@@ -62,8 +106,7 @@ export interface CatalogInput {
 }
 
 export async function catalogScenes(input: CatalogInput): Promise<CatalogResult> {
-  const { anthropicApiKey, catalogModel } = env();
-  const client = new Anthropic({ apiKey: anthropicApiKey });
+  const provider = providerFor("catalog");
 
   const header = {
     source_file: basename(input.sourceFile),
@@ -78,50 +121,28 @@ export async function catalogScenes(input: CatalogInput): Promise<CatalogResult>
     })),
   };
 
-  const content: Anthropic.ContentBlockParam[] = [
-    {
-      type: "text",
-      text:
-        `Catalog this footage. Classify content_type and describe each scene. ` +
-        `Keep index/start/end/spoken_excerpt verbatim:\n` +
-        JSON.stringify(header, null, 2) +
-        `\n\nThe keyframes follow, in scene-index order:`,
-    },
-  ];
-
-  for (const { keyframe } of input.scenes) {
-    const data = readFileSync(keyframe.path).toString("base64");
-    content.push({
-      type: "text",
-      text: `scene ${keyframe.scene.index} @ ${keyframe.atSec.toFixed(1)}s:`,
-    });
-    content.push({
-      type: "image",
-      source: { type: "base64", media_type: mediaTypeFor(keyframe.path), data },
-    });
-  }
-
-  const response = await client.messages.create({
-    model: catalogModel,
-    max_tokens: 10400,
-    // Same guard as Layer 4: unbounded adaptive thinking can spend the whole
-    // budget and return no text. Medium effort keeps it bounded.
-    thinking: { type: "adaptive" },
-    output_config: { effort: "medium" },
-    system: SYSTEM,
-    messages: [{ role: "user", content }],
+  const response = await provider.generateVisionJson({
+    maxTokens: 10400,
+    schema: catalogResultJsonSchema,
+    system: { text: SYSTEM },
+    prompt:
+      `Catalog this footage. Classify content_type and describe each scene. ` +
+      `Keep index/start/end/spoken_excerpt verbatim:\n` +
+      JSON.stringify(header, null, 2) +
+      `\n\nThe keyframes follow, in scene-index order:`,
+    images: input.scenes.map(({ keyframe }) => ({
+      path: keyframe.path,
+      label: `scene ${keyframe.scene.index} @ ${keyframe.atSec.toFixed(1)}s:`,
+    })),
   });
 
-  const text = response.content
-    .filter((b): b is Anthropic.TextBlock => b.type === "text")
-    .map((b) => b.text)
-    .join("");
+  const text = response.text;
 
   if (!text.trim()) {
     throw new Error(
-      `catalog returned no text (stop_reason=${response.stop_reason}, ` +
-        `blocks=[${response.content.map((b) => b.type).join(", ")}], ` +
-        `output_tokens=${response.usage.output_tokens})`,
+      `catalog returned no text (stop_reason=${response.stopReason}, ` +
+        `blocks=[${response.contentBlockTypes?.join(", ") ?? "unknown"}], ` +
+        `output_tokens=${response.usage?.outputTokens ?? "unknown"})`,
     );
   }
 
@@ -132,9 +153,13 @@ export async function catalogScenes(input: CatalogInput): Promise<CatalogResult>
     source_file: basename(input.sourceFile),
     content_type: result.content_type,
     scenes: result.scenes.length,
-    model: catalogModel,
-    input_tokens: response.usage.input_tokens,
-    output_tokens: response.usage.output_tokens,
+    model: provider.model,
+    ...(response.usage
+      ? {
+          input_tokens: response.usage.inputTokens,
+          output_tokens: response.usage.outputTokens,
+        }
+      : {}),
   });
 
   return result;
