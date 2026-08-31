@@ -45,7 +45,10 @@ export async function buildIndex(
   const transcriptText = fullTranscriptText(transcript);
   const hasSpeech = transcriptText.length > 0;
 
-  const scenes = detectScenes(videoPath, duration);
+  // Pass speech starts so a continuous take is split at pauses, not mid-sentence.
+  const scenes = detectScenes(videoPath, duration, {
+    speechBoundaries: transcript?.segments.map((segment) => segment.start) ?? [],
+  });
   const keyframes = extractKeyframes(videoPath, scenes, join(outDir, "keyframes"));
   if (keyframes.length === 0) throw new Error("No keyframes could be extracted");
 
