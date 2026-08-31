@@ -6,6 +6,7 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
+import { spawnSync } from "node:child_process";
 import {
   basename,
   dirname,
@@ -21,6 +22,7 @@ import { pathToFileURL } from "node:url";
 import type { FootageIndex } from "../config/schema.js";
 import { logger } from "../utils/logger.js";
 import { buildIndex } from "./build-index.js";
+import { probeDuration } from "./scene-detect.js";
 
 const VIDEO_EXTS = new Set([".mp4", ".mov"]);
 
@@ -43,13 +45,26 @@ export interface IndexFolderOptions {
   skip?: string;
   limit?: number;
   overwrite?: boolean;
-  asr?: boolean; // undefined = automatic: off for DJI_ files, on otherwise
+  asr?: boolean; // undefined = probe each file; true/false = force the whole run
+  minDuration?: number;
   manifest?: string;
 }
 
 interface BackupManifestEntry {
   SourcePath: string;
   DestinationPaths: string[];
+}
+
+export interface ManifestVideo {
+  sourcePath: string;
+  videoPath?: string;
+  error?: string;
+  durationError?: string;
+}
+
+export interface AsrDecision {
+  enabled: boolean;
+  reason: string;
 }
 
 export interface ParsedIndexFolderArgs {
@@ -68,6 +83,7 @@ export function walkVideos(root: string): string[] {
       if (entry.name.startsWith(".")) continue;
       out.push(...walkVideos(full));
     } else if (
+      entry.isFile() &&
       !entry.name.startsWith("._") &&
       VIDEO_EXTS.has(extname(entry.name).toLowerCase())
     ) {
@@ -111,28 +127,31 @@ function parseManifestEntry(value: unknown, index: number): BackupManifestEntry 
   };
 }
 
-// Prefer the first backup destination that is currently present. The source is
-// a fallback for manifests produced before a destination was mounted locally.
-export function readManifestVideos(path: string): string[] {
+// Prefer the first backup destination that is currently present. A missing
+// record remains in the plan as a failed item so it cannot abort every other
+// clip named by a many-hour batch.
+export function readManifestVideos(path: string): ManifestVideo[] {
   const resolvedManifest = resolve(path);
   const manifestDir = dirname(resolvedManifest);
   const raw = readFileSync(resolvedManifest, "utf8").replace(/^\uFEFF/, "");
   const parsed: unknown = JSON.parse(raw);
   if (!Array.isArray(parsed)) throw new Error("Footage manifest must contain a JSON array");
 
-  return parsed.map((value, index) => {
+  return parsed.map((value, index): ManifestVideo => {
     const entry = parseManifestEntry(value, index);
+    const sourcePath = manifestPath(entry.SourcePath, manifestDir);
     const destinations = entry.DestinationPaths.map((candidate) =>
       manifestPath(candidate, manifestDir),
     );
     const destination = destinations.find(isFile);
-    if (destination) return destination;
-
-    const source = manifestPath(entry.SourcePath, manifestDir);
-    if (isFile(source)) return source;
-    throw new Error(
-      `Manifest entry ${index + 1} has no existing DestinationPaths or SourcePath: ${entry.SourcePath}`,
-    );
+    if (destination) return { sourcePath, videoPath: destination };
+    if (isFile(sourcePath)) return { sourcePath, videoPath: sourcePath };
+    return {
+      sourcePath,
+      error:
+        `Manifest entry ${index + 1} has no existing DestinationPaths ` +
+        `or SourcePath: ${entry.SourcePath}`,
+    };
   });
 }
 
@@ -190,13 +209,78 @@ export function writeIndexMarker(path: string, marker: IndexDoneMarker): void {
   writeFileSync(path, JSON.stringify(marker, null, 2), "utf8");
 }
 
-export function shouldUseAsr(videoPath: string, forced?: boolean): boolean {
-  return forced ?? !basename(videoPath).startsWith("DJI_");
+// Treat an ffprobe failure as a per-item error, not as evidence of silence.
+// Otherwise a transient/corrupt probe could silently drop real speech.
+export function probeHasAudio(videoPath: string): boolean {
+  const result = spawnSync(
+    "ffprobe",
+    [
+      "-v",
+      "error",
+      "-select_streams",
+      "a",
+      "-show_entries",
+      "stream=index",
+      "-of",
+      "csv=p=0",
+      videoPath,
+    ],
+    { encoding: "utf8" },
+  );
+  if (result.error) throw result.error;
+  if (result.status !== 0) {
+    const detail = (result.stderr ?? "").trim();
+    throw new Error(`ffprobe audio-stream check failed${detail ? `: ${detail}` : ""}`);
+  }
+  return (result.stdout ?? "").trim().length > 0;
 }
 
-function isCatalogableVideo(path: string): boolean {
-  const name = basename(path);
+export function decideAsr(videoPath: string, forced?: boolean): AsrDecision {
+  if (forced === true) return { enabled: true, reason: "forced by --asr" };
+  if (forced === false) return { enabled: false, reason: "forced by --no-asr" };
+  return probeHasAudio(videoPath)
+    ? { enabled: true, reason: "audio stream detected by ffprobe" }
+    : { enabled: false, reason: "no audio stream detected by ffprobe" };
+}
+
+export function shouldUseAsr(videoPath: string, forced?: boolean): boolean {
+  return decideAsr(videoPath, forced).enabled;
+}
+
+function candidateName(candidate: ManifestVideo): string {
+  return basename(candidate.videoPath ?? candidate.sourcePath);
+}
+
+function candidateSortPath(candidate: ManifestVideo): string {
+  return candidate.videoPath ?? candidate.sourcePath;
+}
+
+function isCatalogableVideo(candidate: ManifestVideo): boolean {
+  const name = candidateName(candidate);
   return !name.startsWith("._") && VIDEO_EXTS.has(extname(name).toLowerCase());
+}
+
+function deduplicateCandidates(candidates: ManifestVideo[]): ManifestVideo[] {
+  const seen = new Set<string>();
+  return candidates.filter((candidate) => {
+    const rawKey = candidate.videoPath ?? `missing:${candidate.sourcePath}`;
+    const key = process.platform === "win32" ? rawKey.toLowerCase() : rawKey;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function validateOptions(opts: IndexFolderOptions): void {
+  if (opts.limit !== undefined && (!Number.isInteger(opts.limit) || opts.limit < 0)) {
+    throw new Error("--limit must be a non-negative integer");
+  }
+  if (
+    opts.minDuration !== undefined &&
+    (!Number.isFinite(opts.minDuration) || opts.minDuration < 0)
+  ) {
+    throw new Error("--min-duration must be a non-negative number");
+  }
 }
 
 // Batch the existing per-video catalog pipeline. Items are deliberately
@@ -206,30 +290,82 @@ function isCatalogableVideo(path: string): boolean {
 // Usage:
 //   pnpm index:folder "<folder>" [--manifest path.json] [--only s] [--skip s]
 //                     [--limit N] [--overwrite] [--asr | --no-asr]
+//                     [--min-duration sec]
 // A folder may be omitted when --manifest is supplied; absolute source paths
 // are then mirrored safely below outputs/index-state/_absolute/.
 export async function indexFolder(
   folder: string | undefined,
   opts: IndexFolderOptions = {},
 ): Promise<void> {
+  validateOptions(opts);
   if (!folder && !opts.manifest) throw new Error("A folder or --manifest is required");
 
   const sourceRoot = folder ? resolve(folder) : undefined;
+  if (
+    sourceRoot &&
+    (!existsSync(sourceRoot) || !statSync(sourceRoot).isDirectory())
+  ) {
+    throw new Error(`Folder is not an existing directory: ${sourceRoot}`);
+  }
   const manifest = opts.manifest ? resolve(opts.manifest) : undefined;
-  const discovered = manifest ? readManifestVideos(manifest) : walkVideos(sourceRoot as string);
-  const all = discovered
+  const discovered: ManifestVideo[] = manifest
+    ? readManifestVideos(manifest)
+    : walkVideos(sourceRoot as string).map((videoPath) => ({
+        sourcePath: videoPath,
+        videoPath,
+      }));
+  const all = deduplicateCandidates(discovered)
     .filter(isCatalogableVideo)
-    .filter((path) => (opts.only ? basename(path).includes(opts.only) : true))
-    .filter((path) => (opts.skip ? !basename(path).includes(opts.skip) : true))
-    .sort();
+    .filter((candidate) =>
+      opts.only ? candidateName(candidate).includes(opts.only) : true,
+    )
+    .filter((candidate) =>
+      opts.skip ? !candidateName(candidate).includes(opts.skip) : true,
+    )
+    .sort((a, b) => candidateSortPath(a).localeCompare(candidateSortPath(b)));
 
   let skippedExisting = 0;
-  const pending = all.filter((path) => {
-    const exists = !opts.overwrite && existsSync(markerPathFor(path, sourceRoot));
+  const pending = all.filter((candidate) => {
+    const exists =
+      candidate.videoPath !== undefined &&
+      !opts.overwrite &&
+      existsSync(markerPathFor(candidate.videoPath, sourceRoot));
     if (exists) skippedExisting++;
     return !exists;
   });
-  const slice = opts.limit !== undefined ? pending.slice(0, opts.limit) : pending;
+
+  // Apply the duration gate before --limit so "the first N long-form clips"
+  // does not accidentally mean "the first N paths, most of which were short."
+  let skippedDuration = 0;
+  let eligible = pending;
+  if (opts.minDuration !== undefined) {
+    eligible = [];
+    for (const [i, candidate] of pending.entries()) {
+      const file = candidateName(candidate);
+      logger.info(`index:folder duration probe [${i + 1}/${pending.length}]`, { file });
+      if (!candidate.videoPath) {
+        eligible.push(candidate);
+        continue;
+      }
+
+      const duration = probeDuration(candidate.videoPath);
+      if (duration <= 0) {
+        candidate.durationError = `Could not read duration for ${candidate.videoPath}`;
+        eligible.push(candidate);
+      } else if (duration < opts.minDuration) {
+        skippedDuration++;
+        logger.info("index:folder skipped (under --min-duration)", {
+          file,
+          duration_seconds: Number(duration.toFixed(3)),
+          min_duration_seconds: opts.minDuration,
+        });
+      } else {
+        eligible.push(candidate);
+      }
+    }
+  }
+
+  const slice = opts.limit !== undefined ? eligible.slice(0, opts.limit) : eligible;
 
   logger.info("index:folder plan", {
     folder: sourceRoot ?? null,
@@ -238,29 +374,56 @@ export async function indexFolder(
     pending: pending.length,
     willProcess: slice.length,
     state_dir: INDEX_STATE_DIR,
+    asr_policy:
+      opts.asr === true
+        ? "forced on"
+        : opts.asr === false
+          ? "forced off"
+          : "probe audio per file",
+    min_duration_seconds: opts.minDuration ?? null,
   });
 
   let done = 0;
   let failed = 0;
-  for (const [i, path] of slice.entries()) {
-    const file = basename(path);
-    const asr = shouldUseAsr(path, opts.asr);
-    logger.info(`index:folder [${i + 1}/${slice.length}]`, { file, asr });
+  let withAsr = 0;
+  let withoutAsr = 0;
+  for (const [i, candidate] of slice.entries()) {
+    const file = candidateName(candidate);
+    logger.info(`index:folder [${i + 1}/${slice.length}]`, { file });
 
     try {
-      const index = await buildIndex(path, { asr, outRoot: INDEX_OUTPUT_DIR });
-      writeIndexMarker(markerPathFor(path, sourceRoot), {
-        source_path: resolve(path),
+      if (!candidate.videoPath) {
+        throw new Error(candidate.error ?? "Manifest video does not exist");
+      }
+      if (candidate.durationError) throw new Error(candidate.durationError);
+
+      const asr = decideAsr(candidate.videoPath, opts.asr);
+      logger.info("index:folder ASR policy", {
+        file,
+        asr: asr.enabled ? "on" : "off",
+        reason: asr.reason,
+      });
+      if (asr.enabled) withAsr++;
+      else withoutAsr++;
+
+      const index = await buildIndex(candidate.videoPath, {
+        asr: asr.enabled,
+        outRoot: INDEX_OUTPUT_DIR,
+      });
+      const markerPath = markerPathFor(candidate.videoPath, sourceRoot);
+      writeIndexMarker(markerPath, {
+        source_path: resolve(candidate.videoPath),
         indexed_at: new Date().toISOString(),
         scene_count: index.scenes.length,
         content_type: index.content_type,
-        asr,
+        asr: asr.enabled,
       });
       done++;
       logger.info("index:folder item done", {
         file,
         scenes: index.scenes.length,
         content_type: index.content_type,
+        marker: markerPath,
       });
     } catch (err) {
       failed++;
@@ -272,6 +435,9 @@ export async function indexFolder(
     done,
     failed,
     skipped_existing: skippedExisting,
+    with_asr: withAsr,
+    without_asr: withoutAsr,
+    skipped_duration: skippedDuration,
   });
 }
 
@@ -311,6 +477,18 @@ export function parseIndexFolderArgs(argv: string[]): ParsedIndexFolderArgs {
         i++;
         break;
       }
+      case "--min-duration": {
+        const rawDuration = flagValue(argv, i);
+        const minDuration = Number(rawDuration);
+        if (!Number.isFinite(minDuration) || minDuration < 0) {
+          throw new Error(
+            `--min-duration must be a non-negative number, received: ${rawDuration}`,
+          );
+        }
+        options.minDuration = minDuration;
+        i++;
+        break;
+      }
       case "--manifest":
         options.manifest = flagValue(argv, i);
         i++;
@@ -335,12 +513,13 @@ export function parseIndexFolderArgs(argv: string[]): ParsedIndexFolderArgs {
 
   if (forcedAsr !== undefined) options.asr = forcedAsr;
   if (!folder && !options.manifest) throw new Error("A folder or --manifest is required");
+  validateOptions(options);
   return { folder, options };
 }
 
 const USAGE =
   'usage: pnpm index:folder "<folder>" [--manifest path.json] [--only s] [--skip s] ' +
-  "[--limit N] [--overwrite] [--asr | --no-asr]";
+  "[--limit N] [--overwrite] [--asr | --no-asr] [--min-duration sec]";
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   let parsed: ParsedIndexFolderArgs;
