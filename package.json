@@ -15,6 +15,8 @@
     "junk:scan": "tsx src/index/junk-detect.ts",
     "index": "tsx src/index/build-index.ts",
     "index:folder": "tsx src/index/index-folder.ts",
+    "index:rollup": "tsx src/index/rollup.ts",
+    "search": "tsx src/index/search.ts",
     "note": "tsx src/notes/transcribe-note.ts",
     "note:folder": "tsx src/notes/transcribe-folder.ts",
     "asr": "tsx src/layers/layer3-asr.ts",
