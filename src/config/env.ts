@@ -27,8 +27,7 @@ export function env(): Env {
   return {
     anthropicApiKey,
     model: process.env.VIDEOSCAN_MODEL ?? "claude-opus-5",
-    catalogModel:
-      process.env.VIDEOSCAN_CATALOG_MODEL ?? "claude-sonnet-5",
+    catalogModel: process.env.VIDEOSCAN_CATALOG_MODEL ?? "claude-sonnet-5",
     whisperModel: process.env.VIDEOSCAN_WHISPER_MODEL ?? "large-v3",
     python: resolvePython(),
   };

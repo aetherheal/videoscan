@@ -41,6 +41,8 @@ export async function judgeTranscript(
       // Long, dense transcripts made *adaptive* thinking spiral — it spent the
       // entire budget thinking and returned no text (stop_reason=max_tokens).
       // Medium effort keeps that behavior bounded while preserving judgment quality.
+      // max_tokens is a ceiling, not spend; the headroom is for the thinking +
+      // manifest of a 12-minute talker.
       max_tokens: 42000,
       thinking: { type: "adaptive" },
       output_config: { effort: "medium" },

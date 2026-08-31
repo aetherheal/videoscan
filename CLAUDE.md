@@ -36,10 +36,12 @@ video — are out of scope; drop files in `inputs/`.)
 
 - **TypeScript strict**, ESM. Always use `.js` extensions in relative imports.
 - **Claude calls**: use `@anthropic-ai/sdk`, models from `env()`, adaptive
-  thinking. Layer 4 defaults to `claude-opus-5` (override via `VIDEOSCAN_MODEL`;
-  `claude-haiku-4-5` is the cost-optimized cron option), while the catalog
-  defaults to `claude-sonnet-5` (override via `VIDEOSCAN_CATALOG_MODEL`). Never
-  hardcode the key.
+  thinking bounded by `output_config: { effort: "medium" }`. Layer 4 (and the
+  notes summarizer) default to `claude-opus-5` (override via `VIDEOSCAN_MODEL`;
+  `claude-sonnet-5` is the cost-optimized cron option), while the catalog
+  defaults to `claude-sonnet-5` (override via `VIDEOSCAN_CATALOG_MODEL`). Any
+  override must support adaptive thinking + `effort` — pre-4.6 models 400 on
+  both. Never hardcode the key.
 - Layer 4 returns a **strict JSON array** — validate with `clipManifestSchema`,
   never trust raw model text.
 - `src/layers/*` and `src/pipeline/*` own side effects (subprocesses, ffmpeg, fs).

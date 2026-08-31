@@ -104,7 +104,10 @@ export async function catalogScenes(input: CatalogInput): Promise<CatalogResult>
   const response = await client.messages.create({
     model: catalogModel,
     max_tokens: 10400,
+    // Same guard as Layer 4: unbounded adaptive thinking can spend the whole
+    // budget and return no text. Medium effort keeps it bounded.
     thinking: { type: "adaptive" },
+    output_config: { effort: "medium" },
     system: SYSTEM,
     messages: [{ role: "user", content }],
   });
@@ -113,6 +116,14 @@ export async function catalogScenes(input: CatalogInput): Promise<CatalogResult>
     .filter((b): b is Anthropic.TextBlock => b.type === "text")
     .map((b) => b.text)
     .join("");
+
+  if (!text.trim()) {
+    throw new Error(
+      `catalog returned no text (stop_reason=${response.stop_reason}, ` +
+        `blocks=[${response.content.map((b) => b.type).join(", ")}], ` +
+        `output_tokens=${response.usage.output_tokens})`,
+    );
+  }
 
   const raw: unknown = JSON.parse(extractJson(text));
   const result = catalogResultSchema.parse(raw);
