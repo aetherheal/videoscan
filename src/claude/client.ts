@@ -1,9 +1,9 @@
-import Anthropic from "@anthropic-ai/sdk";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { env } from "../config/env.js";
-import { logger } from "../utils/logger.js";
 import { clipSpecSchema, type ClipManifest } from "../config/schema.js";
+import { providerFor } from "../providers/index.js";
+import type { JsonSchema, ProviderUsage } from "../providers/types.js";
+import { logger } from "../utils/logger.js";
 import { extractJson } from "./json.js";
 import type { VideoContext, WhisperTranscript } from "../types.js";
 
@@ -16,16 +16,84 @@ function loadSystemPrompt(): string {
 export interface JudgeResult {
   clips: ClipManifest;
   model: string;
-  usage: Anthropic.Usage;
+  usage?: ProviderUsage;
 }
+
+const timecodeSchema: JsonSchema = {
+  type: "string",
+  pattern: "^\\d{2}:\\d{2}:\\d{2}\\.\\d{3}$",
+};
+
+// The local Zod validation below remains the source of truth. This equivalent
+// JSON Schema constrains Codex CLI's final response before it reaches us.
+const clipManifestJsonSchema: JsonSchema = {
+  type: "array",
+  items: {
+    type: "object",
+    properties: {
+      clip_id: { type: "string" },
+      source_file: { type: "string" },
+      language: { type: "string", enum: ["ko", "en", "mixed"] },
+      start: timecodeSchema,
+      end: timecodeSchema,
+      duration_sec: { type: "number", exclusiveMinimum: 0 },
+      hook_type: {
+        type: "string",
+        enum: ["contrarian", "curiosity_gap", "named_stakes", "specific_number"],
+      },
+      hook_overlay: { type: "string" },
+      captions: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            start: timecodeSchema,
+            end: timecodeSchema,
+            text: { type: "string" },
+          },
+          required: ["start", "end", "text"],
+          additionalProperties: false,
+        },
+      },
+      payoff_line: { type: "string" },
+      shareability_driver: {
+        type: "string",
+        enum: ["myth_correction", "insider_authority", "counterintuitive", "specificity"],
+      },
+      virality_score: { type: "number", minimum: 1, maximum: 10 },
+      virality_rationale: { type: "string" },
+      brand_safety: { type: "string", enum: ["pass", "review"] },
+      brand_safety_reason: { type: ["string", "null"] },
+      reframe_advice: { type: "string", enum: ["speaker-centered", "manual-review"] },
+    },
+    required: [
+      "clip_id",
+      "source_file",
+      "language",
+      "start",
+      "end",
+      "duration_sec",
+      "hook_type",
+      "hook_overlay",
+      "captions",
+      "payoff_line",
+      "shareability_driver",
+      "virality_score",
+      "virality_rationale",
+      "brand_safety",
+      "brand_safety_reason",
+      "reframe_advice",
+    ],
+    additionalProperties: false,
+  },
+};
 
 // Layer 4 — send one transcript to Claude, get back a validated clip manifest.
 export async function judgeTranscript(
   transcript: WhisperTranscript,
   context?: VideoContext,
 ): Promise<JudgeResult> {
-  const { anthropicApiKey, model } = env();
-  const client = new Anthropic({ apiKey: anthropicApiKey });
+  const provider = providerFor("judge");
 
   const userPayload = {
     source_file: transcript.source_file,
@@ -35,44 +103,26 @@ export async function judgeTranscript(
 
   // Streamed: long transcripts + adaptive thinking can push generation past the
   // SDK's 10-minute non-streaming ceiling. Streaming avoids that hard error.
-  const response = await client.messages
-    .stream({
-      model,
+  const response = await provider.generateJson({
       // Long, dense transcripts made *adaptive* thinking spiral — it spent the
       // entire budget thinking and returned no text (stop_reason=max_tokens).
       // Medium effort keeps that behavior bounded while preserving judgment quality.
       // max_tokens is a ceiling, not spend; the headroom is for the thinking +
       // manifest of a 12-minute talker.
-      max_tokens: 42000,
-      thinking: { type: "adaptive" },
-      output_config: { effort: "medium" },
-      system: [
-        {
-          type: "text",
-          text: loadSystemPrompt(),
-          cache_control: { type: "ephemeral" },
-        },
-      ],
-      messages: [
-        {
-          role: "user",
-          content: JSON.stringify(userPayload),
-        },
-      ],
-    })
-    .finalMessage();
+    maxTokens: 42000,
+    schema: clipManifestJsonSchema,
+    system: { text: loadSystemPrompt(), cache: true },
+    prompt: JSON.stringify(userPayload),
+  });
 
-  const text = response.content
-    .filter((b): b is Anthropic.TextBlock => b.type === "text")
-    .map((b) => b.text)
-    .join("");
+  const text = response.text;
 
   if (!text.trim()) {
     // Empty text almost always means thinking consumed the whole token budget.
     throw new Error(
-      `Layer 4 returned no text (stop_reason=${response.stop_reason}, ` +
-        `blocks=[${response.content.map((b) => b.type).join(", ")}], ` +
-        `output_tokens=${response.usage.output_tokens})`,
+      `Layer 4 returned no text (stop_reason=${response.stopReason}, ` +
+        `blocks=[${response.contentBlockTypes?.join(", ") ?? "unknown"}], ` +
+        `output_tokens=${response.usage?.outputTokens ?? "unknown"})`,
     );
   }
 
@@ -103,10 +153,18 @@ export async function judgeTranscript(
     source_file: transcript.source_file,
     clips: clips.length,
     dropped,
-    model,
-    input_tokens: response.usage.input_tokens,
-    output_tokens: response.usage.output_tokens,
+    model: provider.model,
+    ...(response.usage
+      ? {
+          input_tokens: response.usage.inputTokens,
+          output_tokens: response.usage.outputTokens,
+        }
+      : {}),
   });
 
-  return { clips, model, usage: response.usage };
+  return {
+    clips,
+    model: provider.model,
+    ...(response.usage ? { usage: response.usage } : {}),
+  };
 }

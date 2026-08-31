@@ -1,7 +1,7 @@
-import Anthropic from "@anthropic-ai/sdk";
 import { z } from "zod";
-import { env } from "../config/env.js";
 import { extractJson } from "../claude/json.js";
+import { providerFor } from "../providers/index.js";
+import type { JsonSchema } from "../providers/types.js";
 import { logger } from "../utils/logger.js";
 
 const SYSTEM = `You process transcripts of clinic / company footage for Tune Clinic
@@ -28,6 +28,18 @@ const resultSchema = z.object({
   transcript_en: z.string(),
   transcript_ko: z.string(),
 });
+
+const resultJsonSchema: JsonSchema = {
+  type: "object",
+  properties: {
+    summary_en: { type: "string" },
+    summary_ko: { type: "string" },
+    transcript_en: { type: "string" },
+    transcript_ko: { type: "string" },
+  },
+  required: ["summary_en", "summary_ko", "transcript_en", "transcript_ko"],
+  additionalProperties: false,
+};
 
 export interface NoteContent {
   summaryEn: string;
@@ -57,62 +69,44 @@ export async function summarizeTranscript(
 ): Promise<NoteContent> {
   if (transcript.trim().length === 0) return NO_SPEECH;
 
-  const { anthropicApiKey, model } = env();
-  const client = new Anthropic({ apiKey: anthropicApiKey });
+  const provider = providerFor("judge");
 
   // Streamed: a long video's full transcript translated into BOTH languages can
   // take >10 min to generate, and the SDK rejects non-streaming requests that
   // long. 32k max_tokens also gives headroom so the JSON isn't truncated.
-  const response = await client.messages
-    .stream({
-      model,
-      max_tokens: 32000,
-      thinking: { type: "adaptive" },
-      system: SYSTEM,
+  const response = await provider.generateJson({
+      maxTokens: 32000,
+      system: { text: SYSTEM },
       // Structured output guarantees valid JSON (the model otherwise emits raw
       // newlines inside the multi-line summary strings, which breaks JSON.parse).
-      output_config: {
-        // Bounded like Layer 4 — unbounded adaptive thinking on a dense
-        // transcript can spend the whole budget and return no text.
-        effort: "medium",
-        format: {
-          type: "json_schema",
-          schema: {
-            type: "object",
-            properties: {
-              summary_en: { type: "string" },
-              summary_ko: { type: "string" },
-              transcript_en: { type: "string" },
-              transcript_ko: { type: "string" },
-            },
-            required: ["summary_en", "summary_ko", "transcript_en", "transcript_ko"],
-            additionalProperties: false,
-          },
-        },
-      },
-      messages: [
+      /* messages: [
         {
           role: "user",
           content:
             `File: ${meta.filename}\nLength: ${meta.durationSec.toFixed(0)}s\n` +
             `Detected language: ${meta.language}\n\nTranscript (verbatim):\n${transcript}`,
         },
-      ],
-    })
-    .finalMessage();
+      ], */
+    structuredOutput: true,
+    schema: resultJsonSchema,
+    prompt:
+      `File: ${meta.filename}\nLength: ${meta.durationSec.toFixed(0)}s\n` +
+      `Detected language: ${meta.language}\n\nTranscript (verbatim):\n${transcript}`,
+  });
 
-  const text = response.content
-    .filter((b): b is Anthropic.TextBlock => b.type === "text")
-    .map((b) => b.text)
-    .join("");
+  const text = response.text;
 
   const parsed = resultSchema.parse(JSON.parse(extractJson(text)));
 
   logger.info("summarized", {
     filename: meta.filename,
     chars: transcript.length,
-    input_tokens: response.usage.input_tokens,
-    output_tokens: response.usage.output_tokens,
+    ...(response.usage
+      ? {
+          input_tokens: response.usage.inputTokens,
+          output_tokens: response.usage.outputTokens,
+        }
+      : {}),
   });
 
   return {

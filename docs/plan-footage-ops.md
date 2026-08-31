@@ -55,6 +55,14 @@ VIDEOSCAN_WHISPER_MODEL=medium
 PYTHONUTF8=1
 ```
 
+**Codex subscription path (shipped 2026-08-31).** Set
+`VIDEOSCAN_PROVIDER=codex` to route the Layer 4 judge, vision catalog, and
+notes summarizer through `codex exec`, authenticated by the local ChatGPT
+subscription rather than a metered Anthropic or OpenAI API key. It defaults to
+`VIDEOSCAN_CODEX_MODEL=gpt-5.6-sol`; `VIDEOSCAN_CODEX_TIMEOUT_MS=900000` gives
+slow multi-keyframe vision calls a 15-minute allowance. The default remains
+`anthropic`, so existing production configuration is unchanged.
+
 - **`VIDEOSCAN_PYTHON` is required on Windows.** `resolvePython()`
   (`src/config/env.ts:15`) only probes the macOS venv path
   (`python/.venv/bin/python`); the Windows interpreter is at

@@ -7,7 +7,8 @@ be watched to the end and shared.
 
 It is **TypeScript orchestrator + Python ASR**: the layers are coordinated in
 TypeScript; speech recognition runs as a Python (`faster-whisper`) subprocess;
-the editorial judgment is a Claude API call; rendering shells out to `ffmpeg`.
+model calls use either the Anthropic API (the default) or the locally
+authenticated Codex CLI; rendering shells out to `ffmpeg`.
 
 ## Pipeline layers
 
@@ -35,8 +36,9 @@ the paste-ready system prompt it consumes is [`prompts/layer4-system.txt`](promp
 # Node deps
 pnpm install            # (or npm install)
 
-# Secrets
-cp .env.example .env    # then set ANTHROPIC_API_KEY
+# Model provider (this repo reads process.env directly; it does not load .env)
+# Default: set ANTHROPIC_API_KEY and leave VIDEOSCAN_PROVIDER unset/anthropic.
+# ChatGPT subscription path: set VIDEOSCAN_PROVIDER=codex; no OPENAI_API_KEY.
 
 # Python ASR (Layer 3)
 python3 -m venv python/.venv
@@ -106,9 +108,12 @@ auto-rendered — they are routed to the human queue (logged, left in the manife
 
 | Env var | Default | Purpose |
 |---|---|---|
-| `ANTHROPIC_API_KEY` | — | Layer 4 Claude access (required) |
+| `VIDEOSCAN_PROVIDER` | `anthropic` | Model backend: `anthropic` (requires its API key) or `codex` (runs locally authenticated `codex exec`, so no OpenAI API key is needed). |
+| `ANTHROPIC_API_KEY` | — | Anthropic access, required only when `VIDEOSCAN_PROVIDER=anthropic`. |
 | `VIDEOSCAN_MODEL` | `claude-opus-5` | Layer 4 judge + notes summarizer model. Set `claude-sonnet-5` for the cost-optimized cron path; pre-4.6 models reject adaptive thinking / `effort`. |
 | `VIDEOSCAN_CATALOG_MODEL` | `claude-sonnet-5` | High-volume footage catalog model. |
+| `VIDEOSCAN_CODEX_MODEL` | `gpt-5.6-sol` | Codex CLI model for every model call when `VIDEOSCAN_PROVIDER=codex`. |
+| `VIDEOSCAN_CODEX_TIMEOUT_MS` | `900000` | Codex CLI timeout per request (15 minutes by default; useful for vision over many keyframes). On timeout the process tree is killed. Transient failures (capacity, rate limit, 5xx) are retried 3x with 30s/2m/5m backoff. Calls pin `model_reasoning_effort=medium` rather than inheriting `~/.codex/config.toml`. |
 | `VIDEOSCAN_WHISPER_MODEL` | `large-v3` | Layer 3 ASR model |
 | `VIDEOSCAN_PYTHON` | venv or `python3` | Interpreter with `faster-whisper` |
 
