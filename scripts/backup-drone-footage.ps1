@@ -11,13 +11,27 @@ file into a yyyy-MM-dd subfolder below every destination root.
 
 Before copying, the script indexes each destination recursively by filename. A
 file is skipped only at destinations where that filename already exists; other
-destinations are still handled independently. DJI .LRF proxy files and .MP4
-files that do not match the expected DJI naming convention are not copied.
+destinations are still handled independently. DJI .LRF proxy files are never
+copied.
+
+Every .MP4 is backed up, including ones whose names are not in DJI format
+(legacy Phantom/Osmo names, renamed or split clips). Those are dated from their
+LastWriteTime instead and reported via warnings and the summary's
+UnrecognizedNamesDatedByMtime count — footage is never dropped merely because
+its name is unfamiliar. Hidden and system files are included in the scan.
+
+Two conditions are non-fatal but reported: a filename appearing more than once
+below SourceRoot is ambiguous for a filename-keyed backup, so those specific
+names are skipped (see DuplicateNamesSkipped) while everything else still
+copies; and a destination that cannot be fully indexed only risks a redundant
+copy, so it warns. A SourceRoot that cannot be fully enumerated is fatal — an
+incomplete source scan cannot tell you what is missing.
 
 Copying uses only built-in PowerShell commands and robocopy. No network service,
 API, or credentials are used. When ManifestPath is supplied, the script writes
-a JSON array containing one record for each successful destination copy. No
-manifest is written by default.
+a JSON array containing one record per source file newly copied by this run,
+with every destination it reached listed under DestinationPaths. No manifest is
+written by default.
 
 .PARAMETER SourceRoot
 The SD-card directory to scan recursively for DJI .MP4 files. The directory
@@ -28,10 +42,12 @@ One or more backup directory roots. Missing roots and date subfolders are
 created by robocopy as needed. Each root is indexed and copied independently.
 
 .PARAMETER ManifestPath
-Optional path for a JSON manifest of files newly copied by this run. Each entry
-contains the source path, destination root, final destination path, recording
-date, size, copy timestamp, and robocopy exit code. Existing files and files
-only proposed by -WhatIf are not included. If omitted, no manifest is written.
+Optional path for a JSON manifest of files newly copied by this run. One entry
+per source file — not per destination — containing the filename, recording date,
+source path, size, copy timestamp, and a DestinationPaths array of every
+destination it was copied to. This shape lets a downstream catalog run index
+each clip exactly once. Existing files and files only proposed by -WhatIf are
+not included. If omitted, no manifest is written.
 
 .PARAMETER LogPath
 Optional path to one append-only robocopy log shared by all destinations. The
@@ -223,11 +239,23 @@ if ($resolvedManifestPath -and $resolvedLogPath -and
 }
 
 Write-Verbose "Scanning source root: $resolvedSourceRoot"
+# -Force: camera cards and copied trees routinely carry hidden/system attributes.
+# Without it those clips are invisible here and would be dropped silently — the
+# worst possible failure for a backup tool.
+$sourceScanErrors = @()
 $mp4Files = @(
-    Get-ChildItem -LiteralPath $resolvedSourceRoot -Recurse -File |
+    Get-ChildItem -LiteralPath $resolvedSourceRoot -Recurse -File -Force `
+            -ErrorAction SilentlyContinue -ErrorVariable +sourceScanErrors |
         Where-Object { $_.Extension -ieq $VideoExtension } |
         Sort-Object -Property FullName
 )
+
+# A source we could not fully enumerate means we cannot know what is missing.
+# Fail loudly rather than report a clean backup over a partial scan.
+if ($sourceScanErrors.Count -gt 0) {
+    $scanErrorList = ($sourceScanErrors | ForEach-Object { $_.ToString() }) -join '; '
+    throw "SourceRoot could not be fully enumerated ($($sourceScanErrors.Count) error(s)): $scanErrorList"
+}
 
 $duplicateSourceNames = @(
     $mp4Files |
@@ -235,25 +263,54 @@ $duplicateSourceNames = @(
         Where-Object { $_.Count -gt 1 }
 )
 
+# Duplicate filenames are ambiguous for a filename-keyed backup (e.g. -SourceRoot
+# pointed at D:\DCIM spanning DJI_001 and DJI_002). Skip just the ambiguous names
+# and copy everything else — aborting the whole run would strand hundreds of
+# unrelated GB over one collision.
+$duplicateNameSet = New-Object 'System.Collections.Generic.HashSet[string]' (
+    [System.StringComparer]::OrdinalIgnoreCase
+)
+
+$mp4FilesFoundCount = $mp4Files.Count
+
 if ($duplicateSourceNames.Count -gt 0) {
-    $duplicateList = ($duplicateSourceNames | ForEach-Object { $_.Name }) -join ', '
-    throw "SourceRoot contains duplicate MP4 filenames, which is ambiguous for filename-based backups: $duplicateList"
+    foreach ($duplicateGroup in $duplicateSourceNames) {
+        [void] $duplicateNameSet.Add($duplicateGroup.Name)
+        $duplicatePaths = ($duplicateGroup.Group | ForEach-Object { $_.FullName }) -join '; '
+        Write-Warning ("Skipping ambiguous duplicate filename '$($duplicateGroup.Name)' " +
+            "found at: $duplicatePaths")
+    }
+
+    $mp4Files = @($mp4Files | Where-Object { -not $duplicateNameSet.Contains($_.Name) })
 }
 
 $eligibleFiles = New-Object System.Collections.Generic.List[object]
-$invalidNameCount = 0
+$unrecognizedNameCount = 0
 
 foreach ($mp4File in $mp4Files) {
     $dateFolder = Get-DjiDateFolder -FileName $mp4File.Name
+    $dateSource = 'FileName'
+
     if (-not $dateFolder) {
-        $invalidNameCount++
-        Write-Warning "Skipping MP4 with an unsupported or invalid DJI filename: $($mp4File.FullName)"
-        continue
+        # Not a standard DJI_<timestamp>_<seq>_D.MP4 name — legacy Phantom/Osmo
+        # naming, a renamed clip, a "_001" split suffix. Back it up anyway, dated
+        # from its mtime: the brief is "copy every MP4 except .LRF", and silently
+        # dropping footage because we don't recognize its name is the one outcome
+        # this tool must never produce.
+        $dateFolder = $mp4File.LastWriteTime.ToString(
+            'yyyy-MM-dd',
+            [System.Globalization.CultureInfo]::InvariantCulture
+        )
+        $dateSource = 'LastWriteTime'
+        $unrecognizedNameCount++
+        Write-Warning ("MP4 filename is not in DJI format; dating it from LastWriteTime " +
+            "($dateFolder): $($mp4File.FullName)")
     }
 
     $eligibleFiles.Add([pscustomobject] [ordered] @{
         File = $mp4File
         RecordingDate = $dateFolder
+        DateSource = $dateSource
     })
 }
 
@@ -266,9 +323,21 @@ foreach ($resolvedDestinationRoot in $resolvedDestinationRoots) {
 
     if (Test-Path -LiteralPath $resolvedDestinationRoot -PathType Container) {
         Write-Verbose "Indexing destination by filename: $resolvedDestinationRoot"
-        Get-ChildItem -LiteralPath $resolvedDestinationRoot -Recurse -File |
+        # -Force so an already-backed-up clip carrying a hidden attribute is seen
+        # as present rather than re-copied. Enumeration errors here (an unreadable
+        # subfolder, a Drive mount hiccup) are non-fatal: an incomplete index only
+        # costs a redundant robocopy, which is a no-op when the file already
+        # matches. Warn so a systematically unreadable destination is still visible.
+        $destinationScanErrors = @()
+        Get-ChildItem -LiteralPath $resolvedDestinationRoot -Recurse -File -Force `
+                -ErrorAction SilentlyContinue -ErrorVariable +destinationScanErrors |
             Where-Object { $_.Extension -ieq $VideoExtension } |
             ForEach-Object { [void] $existingNames.Add($_.Name) }
+
+        if ($destinationScanErrors.Count -gt 0) {
+            Write-Warning ("Destination '$resolvedDestinationRoot' could not be fully indexed " +
+                "($($destinationScanErrors.Count) error(s)); some files may be re-copied unnecessarily.")
+        }
     }
 
     $destinationStates.Add([pscustomobject] [ordered] @{
@@ -334,10 +403,42 @@ foreach ($copyCandidate in $copyCandidates) {
     }
 
     $attemptedCopyCount++
-    & $robocopyCommand.Source @robocopyArguments
-    $robocopyExitCode = $LASTEXITCODE
+    # robocopy returns 1 on a *successful* copy. Under PowerShell 7.4+
+    # $PSNativeCommandUseErrorActionPreference is $true by default, which turns
+    # any non-zero native exit into a terminating error — that would abort the
+    # run on the very first file copied. Suppress it for this call only.
+    # Console chatter is routed to the verbose stream so the script's success
+    # stream carries nothing but the final summary object.
+    $previousNativeErrorPreference = $null
+    if (Test-Path -LiteralPath 'variable:PSNativeCommandUseErrorActionPreference') {
+        $previousNativeErrorPreference = $PSNativeCommandUseErrorActionPreference
+        $PSNativeCommandUseErrorActionPreference = $false
+    }
+
+    try {
+        & $robocopyCommand.Source @robocopyArguments | ForEach-Object { Write-Verbose $_ }
+        $robocopyExitCode = $LASTEXITCODE
+    } finally {
+        if ($null -ne $previousNativeErrorPreference) {
+            $PSNativeCommandUseErrorActionPreference = $previousNativeErrorPreference
+        }
+    }
     $robocopyReportedCopy = ($robocopyExitCode -band 1) -eq 1
-    $destinationExists = Test-Path -LiteralPath $copyCandidate.DestinationPath -PathType Leaf
+    $destinationFile = Get-Item -LiteralPath $copyCandidate.DestinationPath -Force -ErrorAction SilentlyContinue
+    $destinationExists = $destinationFile -and -not $destinationFile.PSIsContainer
+
+    # Defense in depth: robocopy verifies size itself, but this footage is
+    # irreplaceable, so treat a size mismatch as a failed copy rather than trust
+    # a single signal.
+    if ($destinationExists -and $destinationFile.Length -ne $copyCandidate.File.Length) {
+        $copyFailures.Add([pscustomobject] [ordered] @{
+            FileName = $copyCandidate.File.Name
+            DestinationPath = $copyCandidate.DestinationPath
+            RobocopyExitCode = $robocopyExitCode
+            Reason = "size mismatch: source $($copyCandidate.File.Length) bytes, destination $($destinationFile.Length) bytes"
+        })
+        continue
+    }
 
     if ($robocopyExitCode -ge 8 -or ($robocopyReportedCopy -and -not $destinationExists)) {
         $copyFailures.Add([pscustomobject] [ordered] @{
@@ -383,9 +484,34 @@ if ($resolvedManifestPath -and $PSCmdlet.ShouldProcess($resolvedManifestPath, 'W
         [void] (New-Item -ItemType Directory -Path $manifestDirectory -Force)
     }
 
-    $manifestJson = ConvertTo-Json -InputObject $newlyCopiedFiles.ToArray() -Depth 4
-    if ($newlyCopiedFiles.Count -eq 0) {
+    # One entry per SOURCE file, not per (file x destination). The manifest exists
+    # so a downstream catalog run can index only what is new; emitting a clip once
+    # per destination root would make a naive consumer index — and pay Claude
+    # vision costs for — the same footage N times.
+    $manifestEntries = @(
+        $newlyCopiedFiles |
+            Group-Object -Property SourcePath |
+            ForEach-Object {
+                $first = $_.Group[0]
+                [pscustomobject] [ordered] @{
+                    FileName = $first.FileName
+                    RecordingDate = $first.RecordingDate
+                    SourcePath = $first.SourcePath
+                    SizeBytes = $first.SizeBytes
+                    CopiedAtUtc = $first.CopiedAtUtc
+                    DestinationPaths = @($_.Group | ForEach-Object { $_.DestinationPath })
+                }
+            }
+    )
+
+    $manifestJson = ConvertTo-Json -InputObject $manifestEntries -Depth 5
+    if ($manifestEntries.Count -eq 0) {
         $manifestJson = '[]'
+    }
+    elseif (-not $manifestJson.TrimStart().StartsWith('[')) {
+        # Some PowerShell versions unwrap a single-element array into a bare
+        # object. Consumers always expect an array, so re-wrap only if needed.
+        $manifestJson = "[$manifestJson]"
     }
     Set-Content -LiteralPath $resolvedManifestPath -Value $manifestJson -Encoding UTF8
     $manifestWritten = $true
@@ -394,22 +520,31 @@ if ($resolvedManifestPath -and $PSCmdlet.ShouldProcess($resolvedManifestPath, 'W
 $summary = [pscustomobject] [ordered] @{
     SourceRoot = $resolvedSourceRoot
     DestinationCount = $destinationStates.Count
-    Mp4FilesFound = $mp4Files.Count
+    Mp4FilesFound = $mp4FilesFoundCount
     EligibleFiles = $eligibleFiles.Count
-    InvalidNamesSkipped = $invalidNameCount
+    UnrecognizedNamesDatedByMtime = $unrecognizedNameCount
     AlreadyPresent = $alreadyPresentCount
     CopyCandidates = $copyCandidates.Count
     CopiesAttempted = $attemptedCopyCount
     CopiesSucceeded = $newlyCopiedFiles.Count
     CopiesFailed = $copyFailures.Count
+    DuplicateNamesSkipped = $duplicateNameSet.Count
     ManifestPath = if ($manifestWritten) { $resolvedManifestPath } else { $null }
     LogPath = $resolvedLogPath
 }
+
+# robocopy leaves its own (non-zero on success) exit code behind. Called in an
+# existing session that would read as a failure to any wrapper checking
+# $LASTEXITCODE, so reset it before returning.
+$global:LASTEXITCODE = 0
 
 Write-Output $summary
 
 if ($copyFailures.Count -gt 0) {
     $failureDetails = $copyFailures |
-        ForEach-Object { "$($_.FileName) -> $($_.DestinationPath) (robocopy exit $($_.RobocopyExitCode))" }
-    throw "$($copyFailures.Count) robocopy operation(s) failed: $($failureDetails -join '; ')"
+        ForEach-Object {
+            $detail = "$($_.FileName) -> $($_.DestinationPath) (robocopy exit $($_.RobocopyExitCode))"
+            if ($_.PSObject.Properties['Reason']) { "$detail [$($_.Reason)]" } else { $detail }
+        }
+    throw "$($copyFailures.Count) copy operation(s) failed: $($failureDetails -join '; ')"
 }
