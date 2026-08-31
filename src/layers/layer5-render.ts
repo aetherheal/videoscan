@@ -1,6 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { logger } from "../utils/logger.js";
 import { needsHumanReview, type ClipSpec } from "../config/schema.js";
 
@@ -80,7 +81,7 @@ export function renderClip(
 }
 
 // CLI: pnpm render <manifest.json> <video-file>
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const [, , manifestPath, videoPath] = process.argv;
   if (!manifestPath || !videoPath) {
     logger.error("usage: tsx src/layers/layer5-render.ts <manifest.json> <video-file>");

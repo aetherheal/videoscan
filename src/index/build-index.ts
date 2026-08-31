@@ -1,5 +1,6 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { basename, extname, join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { transcribe } from "../layers/layer3-asr.js";
 import { detectScenes, probeDuration } from "./scene-detect.js";
 import { extractKeyframes } from "./keyframes.js";
@@ -80,7 +81,7 @@ export async function buildIndex(
   return index;
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const argv = process.argv.slice(2);
   const video = argv.find((a) => !a.startsWith("--"));
   if (!video) {
