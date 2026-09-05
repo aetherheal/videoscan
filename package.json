@@ -17,11 +17,13 @@
     "index:folder": "tsx src/index/index-folder.ts",
     "index:rollup": "tsx src/index/rollup.ts",
     "search": "tsx src/index/search.ts",
+    "review:pack": "tsx src/review/build-pack.ts",
     "note": "tsx src/notes/transcribe-note.ts",
     "note:folder": "tsx src/notes/transcribe-folder.ts",
     "asr": "tsx src/layers/layer3-asr.ts",
     "judge": "tsx src/layers/layer4-judge.ts",
-    "render": "tsx src/layers/layer5-render.ts"
+    "render": "tsx src/layers/layer5-render.ts",
+    "test": "tsx --test src/review/review-pack.test.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.100.1",

@@ -104,6 +104,30 @@ Outputs land in `outputs/<video-stem>/`:
 `brand_safety: "review"` or `reframe_advice: "manual-review"` are **not**
 auto-rendered — they are routed to the human queue (logged, left in the manifest).
 
+## PD Select Pack (Mac + Premiere)
+
+Turn the rolled-up catalog and viral-short manifests into a folder an editor can
+use without a CLI, API key, or local runtime. It contains a double-clickable
+search/review page, small preview proxies, and Premiere-importable FCP7 XML
+select reels.
+
+```powershell
+pnpm review:pack `
+  --source-root "F:\Tune Clinic Recordings" `
+  --media-root "/Users/pd/Library/CloudStorage/GoogleDrive-Tune/Recordings" `
+  --out "F:\Tune Clinic Recordings\AI Review" `
+  --query "원장님 상담 설명" `
+  --query "외관 드론 해질녘"
+```
+
+`--source-root` is the media mount on the build machine. `--media-root` is the
+matching root on the editor's Mac; the generated XML embeds that Mac path while
+ffprobe reads the Windows source. Send the complete output folder and have the
+PD open `OPEN_ME.html`, then import the desired `.xml` file in Premiere.
+
+See [`docs/pd-select-pack.md`](docs/pd-select-pack.md) for filters, review export,
+path-mapping rules, and the one-time Premiere acceptance check.
+
 ## Configuration
 
 | Env var | Default | Purpose |

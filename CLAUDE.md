@@ -31,6 +31,10 @@ video — are out of scope; drop files in `inputs/`.)
 - `src/config/schema.ts` — zod schema for the `ClipSpec` manifest. The source of
   truth for the Layer 4 ↔ Layer 5 contract.
 - `src/types.ts` — the `WhisperTranscript` shape (Layer 3 ↔ Layer 4 contract).
+- `src/review/build-pack.ts` — offline PD handoff: catalog/shorts → preview
+  proxies + `OPEN_ME.html` + portable Premiere FCP7 XML select reels.
+- `docs/pd-select-pack.md` — Windows-to-Mac media-root mapping and the PD
+  acceptance workflow. Keep build-machine absolute paths out of pack data/XML.
 
 ## Conventions
 
@@ -71,4 +75,5 @@ pnpm install
 pnpm typecheck
 pnpm scan:dry inputs/<video>.mp4   # ASR + judge, no ffmpeg
 pnpm scan     inputs/<video>.mp4   # full
+pnpm test                           # synthetic-media PD Select Pack integration
 ```

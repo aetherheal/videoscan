@@ -16,8 +16,11 @@ export interface Env {
 
 function resolvePython(): string {
   if (process.env.VIDEOSCAN_PYTHON) return process.env.VIDEOSCAN_PYTHON;
-  const venv = resolve(process.cwd(), "python/.venv/bin/python");
-  return existsSync(venv) ? venv : "python3";
+  const candidates = process.platform === "win32"
+    ? [resolve(process.cwd(), "python/.venv/Scripts/python.exe")]
+    : [resolve(process.cwd(), "python/.venv/bin/python")];
+  const venv = candidates.find(existsSync);
+  return venv ?? (process.platform === "win32" ? "python" : "python3");
 }
 
 export function env(): Env {
