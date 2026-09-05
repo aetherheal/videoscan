@@ -61,7 +61,7 @@ def rate_xml(tb, ntsc):
 
 
 def build(editlist):
-    name = escape(str(editlist.get("name", "Videoscan Cut")))
+    name = escape(str(editlist.get("name", "Video Scan Cut")))
     probed = []
     for c in editlist["clips"]:
         m = ffprobe(c["path"])

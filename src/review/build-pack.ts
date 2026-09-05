@@ -481,7 +481,7 @@ export function buildReviewPack(opts: BuildReviewPackOptions): BuildReviewPackRe
   writeFileSync(
     join(outDir, "README.txt"),
     [
-      "VIDEOSCAN AI · PD SELECT PACK",
+      "VIDEO SCAN · PD SELECT PACK",
       "",
       "1. OPEN_ME.html을 더블클릭합니다.",
       "2. 프록시를 보고 채택/보류/제외와 메모를 남깁니다.",

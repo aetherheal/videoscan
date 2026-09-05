@@ -7,7 +7,7 @@ review-state export, and one Premiere-importable FCP7 XML select reel per group.
 
 ## Build on the indexing machine
 
-The source root is the media path on the machine running Videoscan. The media
+The source root is the media path on the machine running Video Scan. The media
 root is the equivalent root on the editor's Mac. Their folder structure below
 the root must match.
 

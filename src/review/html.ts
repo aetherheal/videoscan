@@ -102,7 +102,7 @@ export function buildReviewHtml(payload: ReviewPagePayload): string {
 </head>
 <body>
   <main class="shell">
-    <div class="eyebrow">Videoscan AI · PD Select Pack</div>
+    <div class="eyebrow">Video Scan · PD Select Pack</div>
     <h1 id="pack-name"></h1>
     <div class="sub" id="subtitle"></div>
     <div class="stats" id="stats"></div>

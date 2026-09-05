@@ -2,7 +2,7 @@
 
 ## What this repo is
 
-`videoscan-ai` — a viral-shorts pipeline for 압구정튠의원 (Apgujeong Tune Clinic),
+`videoscan` - the Video Scan viral-shorts pipeline for 압구정튠의원 (Apgujeong Tune Clinic),
 under the **Chamakase (차마카세)** identity. It scans one long-form source video
 and emits a ranked set of vertical (9:16) short clips.
 
